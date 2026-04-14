@@ -1675,6 +1675,15 @@
     let currentStepCursor = 0;
     const recentAlertIds = new Map();
     const ALERT_DEDUP_WINDOW_MS = 120000;
+    // Toast durations grouped by intent. Centralised so a future tweak
+    // (e.g. accessibility long-read mode) is one edit, not thirteen.
+    const TOAST_MS = {
+      short:     1500,   // brief success (link copied)
+      default:   3000,   // standard info/success — also showToast() default
+      error:     5000,   // recoverable error or warn
+      errorLong: 6000,   // error with extra context (humanised diagnostics)
+      critical:  8000    // critical: feature halted, library failed, repeated failures
+    };
     let lastDangerCheckAt = 0;
     const lastAlertStats = { received: 0, shown: 0, discarded: 0, unknownCity: 0 };
 
@@ -1895,7 +1904,7 @@
     // per the firestore.rules policy (world-read, owner-write).
     async function signInWithGoogle() {
       if (!window.firebase || !window.firebaseAPIs) {
-        showToast('⚠️ Sign-in unavailable — Firebase not loaded', true, 5000);
+        showToast('⚠️ Sign-in unavailable — Firebase not loaded', true, TOAST_MS.error);
         return null;
       }
       const { auth } = window.firebase;
@@ -1906,7 +1915,7 @@
         return result.user;
       } catch (e) {
         console.error('[Auth] sign-in failed:', e);
-        showToast('⚠️ Sign-in failed: ' + (e.message || e.code || 'unknown'), true, 5000);
+        showToast('⚠️ Sign-in failed: ' + (e.message || e.code || 'unknown'), true, TOAST_MS.error);
         return null;
       }
     }
@@ -1919,7 +1928,7 @@
         // SAFETY (B1): a silent sign-out failure means the user thinks
         // they logged out but their session is still live — surface it.
         console.error('[Auth] sign-out failed:', e);
-        showToast('⚠️ Sign-out failed — ' + (e && e.message ? e.message : 'try again'), true, 5000);
+        showToast('⚠️ Sign-out failed — ' + (e && e.message ? e.message : 'try again'), true, TOAST_MS.error);
       }
     }
 
@@ -2024,10 +2033,10 @@
         console.error('Failed to write share data to Firestore:', e);
         shareWriteFailures = (shareWriteFailures || 0) + 1;
         if (shareWriteFailures === 1) {
-          showToast('⚠️ Share failed — ' + (e.code || e.message || 'unknown'), true, 5000);
+          showToast('⚠️ Share failed — ' + (e.code || e.message || 'unknown'), true, TOAST_MS.error);
         }
         if (shareWriteFailures >= 3) {
-          showToast('⚠️ Sharing disabled after repeated Firestore failures', true, 8000);
+          showToast('⚠️ Sharing disabled after repeated Firestore failures', true, TOAST_MS.critical);
           stopSharing();
         }
       }
@@ -2038,7 +2047,7 @@
       console.log(`[Share] Offline simulation: ${shareSimulateOffline ? 'ON' : 'OFF'}`);
       updateShareButton();
       if (shareSimulateOffline) {
-        showToast('🏠 Simulating shelter entry — no more location pings (receiver will show offline after ~4s)', false, 6000);
+        showToast('🏠 Simulating shelter entry — no more location pings (receiver will show offline after ~4s)', false, TOAST_MS.errorLong);
       } else {
         showToast('📡 Back online — resuming location pings');
         pushSharedLocation();
@@ -2233,7 +2242,7 @@
       } catch (e) {
         console.error('Navigate to shelter failed:', e);
         const shelterDest = { name: shelter.name };
-        showToast(humanizeDirectionsError(e, currentOrigin, shelterDest), true, 6000);
+        showToast(humanizeDirectionsError(e, currentOrigin, shelterDest), true, TOAST_MS.errorLong);
       }
     }
 
@@ -2658,7 +2667,7 @@
         drawAlternativePolylines();
         updateRouteOptionsPanel();
         tbtClearOffRouteState();
-        showToast('Route recalculated', false, 3000);
+        showToast('Route recalculated', false, TOAST_MS.default);
       } catch (e) {
         console.error('[tbt] recalc failed:', e);
         // Sticky failure (review #3): do NOT let subsequent off-route ticks
@@ -2791,7 +2800,7 @@
       if (currentStepIndex.length === 0) {
         // Loud failure — caller (startNavigation/startSimulation) shouldn't
         // arrive here without a route, but if they do, surface it.
-        showToast('⚠️ Pick a route first — no directions to show', true, 5000);
+        showToast('⚠️ Pick a route first — no directions to show', true, TOAST_MS.error);
         return;
       }
       currentStepCursor = 0;
@@ -3024,7 +3033,7 @@
         return true;
       } catch (e) {
         console.error('Directions failed:', e);
-        showToast(humanizeDirectionsError(e, currentOrigin, currentDestination), true, 6000);
+        showToast(humanizeDirectionsError(e, currentOrigin, currentDestination), true, TOAST_MS.errorLong);
         return false;
       }
     }
@@ -3629,7 +3638,7 @@
     function copyShareUrl() {
       const url = document.getElementById('share-url-text').textContent;
       if (!url) return;
-      const onSuccess = () => showToast('Link copied', false, 1500);
+      const onSuccess = () => showToast('Link copied', false, TOAST_MS.short);
       const onFailure = () => showToast('Copy failed — select the link and copy manually', true, 2500);
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(url).then(onSuccess, () => {
@@ -3916,7 +3925,7 @@
         console.error('[sim] simStep threw, halting simulation:', e);
         try { stopSimulation(); } catch (_) { /* best-effort */ }
         setFeedStatus('error', 'SIMULATION HALTED — internal error: ' + (e && e.message ? e.message : e));
-        showToast('⚠️ Simulation halted — ' + (e && e.message ? e.message : 'internal error'), true, 8000);
+        showToast('⚠️ Simulation halted — ' + (e && e.message ? e.message : 'internal error'), true, TOAST_MS.critical);
       }
     }
 
@@ -3989,7 +3998,7 @@
     }
 
     // ========== TOAST ==========
-    function showToast(msg, isError = false, durationMs = 3000) {
+    function showToast(msg, isError = false, durationMs = TOAST_MS.default) {
       const t = document.getElementById('toast');
       t.textContent = msg;
       t.className = 'visible' + (isError ? ' error' : '');
@@ -4290,7 +4299,7 @@
 
       if (!google.maps.places) {
         console.error('[Autocomplete] Places library not loaded');
-        showToast('Places library failed to load', true, 8000);
+        showToast('Places library failed to load', true, TOAST_MS.critical);
         return;
       }
 
@@ -4342,7 +4351,7 @@
           updateDirectionsGate();
         } catch (e) {
           console.error('[Autocomplete:NEW] Fetch From error:', e);
-          showToast('Could not resolve the origin — try a different address', true, 5000);
+          showToast('Could not resolve the origin — try a different address', true, TOAST_MS.error);
         }
       });
 
@@ -4362,7 +4371,7 @@
           updateDirectionsGate();
         } catch (e) {
           console.error('[Autocomplete:NEW] Fetch To error:', e);
-          showToast('Could not resolve the destination — try a different address', true, 5000);
+          showToast('Could not resolve the destination — try a different address', true, TOAST_MS.error);
         }
       });
     }
