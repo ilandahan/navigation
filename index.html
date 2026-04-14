@@ -3064,15 +3064,16 @@
     }
 
     // ========== POLYGON INDEX ==========
+    // Implementation lives in polygonIndex.js so it can be unit-tested
+    // without a browser. This wrapper keeps the inline call signature.
+    // SAFETY: surface skip count loudly — a sudden jump in skips means
+    // the upstream Pikud HaOref payload shape regressed.
     function buildPolygonIndex(data) {
-      for (const [name, coords] of Object.entries(data)) {
-        if (name.startsWith('_')) continue;
-        if (!Array.isArray(coords) || coords.length < 3) continue;
-
-        // Convert [lng, lat] -> { lat, lng } for Google Maps
-        const latLngs = coords.map(c => ({ lat: c[1], lng: c[0] }));
-
-        polygonIndex[name] = { latLngs };
+      const { index, skipped } = window.PolygonIndex.build(data);
+      polygonIndex = index;
+      if (skipped.length > 0) {
+        console.warn('[polygon-index] skipped ' + skipped.length + ' zones:',
+          skipped.slice(0, 10), skipped.length > 10 ? '...and more' : '');
       }
     }
 
@@ -4724,6 +4725,7 @@
   <script src="./alertRouteFilter.js"></script>
   <script src="./mapsShareLink.js"></script>
   <script src="./routeAdapter.js"></script>
+  <script src="./polygonIndex.js"></script>
 
   <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
        `loading=async` is Google's current best-practice flag (see
