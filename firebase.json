@@ -8,15 +8,20 @@
     "ignore": [
       "firebase.json",
       ".firebaserc",
-      ".firebase/**",
-      "**/.*",
-      "**/node_modules/**",
-      "docs/**",
-      "tests/**",
+      ".mcp.json",
+      ".gitignore",
+      "CLAUDE.md",
+      "firestore.rules",
+      "firestore.indexes.json",
       "download-polygons.js",
       "test-route-filter.html",
-      "firestore.rules",
-      "firestore.indexes.json"
+      ".firebase/**",
+      ".git/**",
+      ".aid/**",
+      ".claude/**",
+      "docs/**",
+      "tests/**",
+      "node_modules/**"
     ]
   }
 }
