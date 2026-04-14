@@ -1783,10 +1783,52 @@
       setupControls();
       addMyLocationButton();
 
+      // Tab-life guards: a live-mode driver who backgrounds or closes the
+      // tab must not silently stop receiving alerts. beforeunload warns
+      // while navigating; visibilitychange surfaces a banner while hidden.
+      setupTabLifeHandlers();
+
       // Done loading
       dom.loading.classList.add('hidden');
       // Sim controls stay disabled until user loads a route
       setSimControlsEnabled(false);
+    }
+
+    // ========== TAB-LIFE HANDLERS (R4) ==========
+    // Prior feedState captured when the tab goes hidden so we only restore
+    // the banner we ourselves set — never overwrite a genuine error state
+    // that arrived while the tab was hidden.
+    let tabHiddenPriorFeedState = null;
+    function setupTabLifeHandlers() {
+      window.addEventListener('beforeunload', (e) => {
+        if (typeof isDriving !== 'undefined' && isDriving) {
+          // Chrome/Firefox/Safari all show their own generic prompt; the
+          // returnValue string is required to trigger it on older browsers.
+          e.preventDefault();
+          e.returnValue = 'Navigation is in progress — leaving now will miss live alerts.';
+          return e.returnValue;
+        }
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          // Only capture + banner if no error is already being surfaced —
+          // we never downgrade a loud failure to a "tab hidden" notice.
+          if (feedState === 'on' || feedState === 'starting') {
+            tabHiddenPriorFeedState = feedState;
+            setFeedStatus('warn',
+              'TAB HIDDEN — live alerts may be delayed. Keep this tab open during a drive.');
+          }
+        } else {
+          // Restore only if we set the warn state ourselves.
+          if (tabHiddenPriorFeedState === 'on') {
+            setFeedStatus('ok', '');
+          } else if (tabHiddenPriorFeedState === 'starting') {
+            hideFeedStatus();
+          }
+          tabHiddenPriorFeedState = null;
+        }
+      });
     }
 
     function cacheDomRefs() {
@@ -3393,18 +3435,43 @@
         throw new Error('adaptRoute: empty overview_path — Routes API returned no geometry');
       }
       const bounds = boundsFromPath(overview_path);
-      const legs = (r.legs || []).map(leg => ({
-        distance: { value: leg.distanceMeters || 0 },
-        duration: { value: Math.round((leg.durationMillis || 0) / 1000) },
-        steps: (leg.steps || []).map(step => ({
-          distance: { value: step.distanceMeters || 0 },
-          path: (step.path || []).map(routePointToLatLng).filter(Boolean),
-          instructions: step.instructions || ''
-        }))
-      }));
-      const totalMeters = legs.reduce((sum, l) => sum + (l.distance.value || 0), 0);
+      // SAFETY: validate every leg and step. A single malformed segment
+      // (NaN / negative / undefined distance) must NOT be silently coerced
+      // to 0 — cumulativeMeters would skip that span, TBT step bounds would
+      // collapse, and the alert filter's ETA would be computed against a
+      // hole in the route. Fail loud so the caller banners the recalc.
+      const legs = (r.legs || []).map((leg, i) => {
+        if (!leg || typeof leg !== 'object') {
+          throw new Error('adaptRoute: leg ' + i + ' is not an object');
+        }
+        if (typeof leg.distanceMeters !== 'number' || !isFinite(leg.distanceMeters) || leg.distanceMeters < 0) {
+          throw new Error('adaptRoute: leg ' + i + ' has invalid distanceMeters: ' + leg.distanceMeters);
+        }
+        if (typeof leg.durationMillis !== 'number' || !isFinite(leg.durationMillis) || leg.durationMillis < 0) {
+          throw new Error('adaptRoute: leg ' + i + ' has invalid durationMillis: ' + leg.durationMillis);
+        }
+        const steps = (leg.steps || []).map((step, j) => {
+          if (!step || typeof step !== 'object') {
+            throw new Error('adaptRoute: leg ' + i + ' step ' + j + ' is not an object');
+          }
+          if (typeof step.distanceMeters !== 'number' || !isFinite(step.distanceMeters) || step.distanceMeters < 0) {
+            throw new Error('adaptRoute: leg ' + i + ' step ' + j + ' has invalid distanceMeters: ' + step.distanceMeters);
+          }
+          return {
+            distance: { value: step.distanceMeters },
+            path: (step.path || []).map(routePointToLatLng).filter(Boolean),
+            instructions: step.instructions || ''
+          };
+        });
+        return {
+          distance: { value: leg.distanceMeters },
+          duration: { value: Math.round(leg.durationMillis / 1000) },
+          steps: steps
+        };
+      });
+      const totalMeters = legs.reduce((sum, l) => sum + l.distance.value, 0);
       if (legs.length > 0 && totalMeters === 0) {
-        throw new Error('adaptRoute: zero-distance route — Routes API returned malformed legs');
+        throw new Error('adaptRoute: zero-distance route — Routes API returned legs summing to 0');
       }
       return { summary: r.description || '', overview_path, bounds, legs };
     }
