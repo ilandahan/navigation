@@ -6,9 +6,15 @@ CLAUDE.md
 
 # ---- Dev-only artifacts (not served by the app) ----
 docs/
-tests/
 test-route-filter.html
 download-polygons.js
+# tests/ IS tracked — offline suite (filter, shareLink, tbt-step-index) +
+# Playwright E2E (tests/e2e/) are the quality gate for the repo. The
+# generated output below is not.
+tests/e2e/playwright-report/
+tests/e2e/.last-run.json
+test-results/
+playwright-report/
 
 # ---- Secrets ----
 .env
