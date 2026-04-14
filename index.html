@@ -1915,7 +1915,12 @@
       const { auth } = window.firebase;
       const { signOut } = window.firebaseAPIs;
       try { await signOut(auth); console.log('[Auth] signed out'); }
-      catch (e) { console.error('[Auth] sign-out failed:', e); }
+      catch (e) {
+        // SAFETY (B1): a silent sign-out failure means the user thinks
+        // they logged out but their session is still live — surface it.
+        console.error('[Auth] sign-out failed:', e);
+        showToast('⚠️ Sign-out failed — ' + (e && e.message ? e.message : 'try again'), true, 5000);
+      }
     }
 
     async function startSharing() {
