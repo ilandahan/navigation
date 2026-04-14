@@ -3424,56 +3424,11 @@
       return b;
     }
     // Adapter: convert one Routes API "route" to a legacy-shaped object.
-    // SAFETY: a zero-length or zero-distance route silently breaks every
-    // downstream call (findFirstIndexWithinBuffer never matches, so every
-    // alert looks `off_route`). Validate the Routes API shape and throw
-    // loudly so the caller's catch block can banner "route load failed".
+    // Implementation lives in routeAdapter.js so it can be unit-tested
+    // without a browser; this thin wrapper injects the google.maps-backed
+    // helpers it needs (routePointToLatLng, boundsFromPath).
     function adaptRoute(r) {
-      if (!r) throw new Error('adaptRoute: null/undefined route');
-      const overview_path = (r.path || []).map(routePointToLatLng).filter(Boolean);
-      if (overview_path.length === 0) {
-        throw new Error('adaptRoute: empty overview_path — Routes API returned no geometry');
-      }
-      const bounds = boundsFromPath(overview_path);
-      // SAFETY: validate every leg and step. A single malformed segment
-      // (NaN / negative / undefined distance) must NOT be silently coerced
-      // to 0 — cumulativeMeters would skip that span, TBT step bounds would
-      // collapse, and the alert filter's ETA would be computed against a
-      // hole in the route. Fail loud so the caller banners the recalc.
-      const legs = (r.legs || []).map((leg, i) => {
-        if (!leg || typeof leg !== 'object') {
-          throw new Error('adaptRoute: leg ' + i + ' is not an object');
-        }
-        if (typeof leg.distanceMeters !== 'number' || !isFinite(leg.distanceMeters) || leg.distanceMeters < 0) {
-          throw new Error('adaptRoute: leg ' + i + ' has invalid distanceMeters: ' + leg.distanceMeters);
-        }
-        if (typeof leg.durationMillis !== 'number' || !isFinite(leg.durationMillis) || leg.durationMillis < 0) {
-          throw new Error('adaptRoute: leg ' + i + ' has invalid durationMillis: ' + leg.durationMillis);
-        }
-        const steps = (leg.steps || []).map((step, j) => {
-          if (!step || typeof step !== 'object') {
-            throw new Error('adaptRoute: leg ' + i + ' step ' + j + ' is not an object');
-          }
-          if (typeof step.distanceMeters !== 'number' || !isFinite(step.distanceMeters) || step.distanceMeters < 0) {
-            throw new Error('adaptRoute: leg ' + i + ' step ' + j + ' has invalid distanceMeters: ' + step.distanceMeters);
-          }
-          return {
-            distance: { value: step.distanceMeters },
-            path: (step.path || []).map(routePointToLatLng).filter(Boolean),
-            instructions: step.instructions || ''
-          };
-        });
-        return {
-          distance: { value: leg.distanceMeters },
-          duration: { value: Math.round(leg.durationMillis / 1000) },
-          steps: steps
-        };
-      });
-      const totalMeters = legs.reduce((sum, l) => sum + l.distance.value, 0);
-      if (legs.length > 0 && totalMeters === 0) {
-        throw new Error('adaptRoute: zero-distance route — Routes API returned legs summing to 0');
-      }
-      return { summary: r.description || '', overview_path, bounds, legs };
+      return window.RouteAdapter.adaptRoute(r, routePointToLatLng, boundsFromPath);
     }
 
     async function runRoutingRequest({ origin, destination, travelMode, alternatives, waypoints }) {
@@ -4768,6 +4723,7 @@
   <script src="./shelterTimeConstants.js"></script>
   <script src="./alertRouteFilter.js"></script>
   <script src="./mapsShareLink.js"></script>
+  <script src="./routeAdapter.js"></script>
 
   <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
        `loading=async` is Google's current best-practice flag (see
