@@ -5,6 +5,25 @@
   <title>Live Location Receiver — Pikud HaOref POC</title>
   <link rel="preconnect" href="https://maps.googleapis.com">
   <link rel="preconnect" href="https://maps.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+
+  <!-- Firebase Firestore only (no Auth — receiver is anonymous; the uid in
+       the URL is the capability token, per firestore.rules world-read). -->
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+    import {
+      getFirestore, doc, onSnapshot
+    } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+    import { firebaseConfig } from './firebaseConfig.js';
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    window.firebase = { app, db };
+    window.firebaseAPIs = { doc, onSnapshot };
+    window.dispatchEvent(new CustomEvent('firebase-ready'));
+  </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Segoe UI', Arial, sans-serif; }
@@ -254,12 +273,11 @@
     // ========== CONFIG ==========
     const OFFLINE_THRESHOLD_MS = 4000;    // consider offline after 4s no update
     const CRITICAL_THRESHOLD_MS = 600000; // 10 min - switch to critical message
-    const POLL_INTERVAL_MS = 500;         // poll twice per second for snappier detection
+    const STALE_CHECK_INTERVAL_MS = 500;  // how often we re-evaluate "is the last update stale?"
 
     // ========== STATE ==========
     const params = new URLSearchParams(location.search);
-    const sessionId = params.get('session') || 'default';
-    const storageKey = `share_${sessionId}`;
+    const driverUid = params.get('uid') || '';
 
     let map = null;
     let senderMarker = null;
@@ -268,141 +286,40 @@
     let isOffline = false;
     let lostSince = null; // Date when connection was lost
     let lastKnownLocation = null;
-    let corruptKeysSeen = new Set();
+    let sawFirstData = false;
+    let errorsSeen = new Set();
+    let unsubscribe = null;
 
-    // SAFETY: every dropped/pruned share entry is a potential signal of a
-    // sender-side payload regression. Don't leave it in console.warn only —
-    // surface a visible banner so the receiver-side operator can flag it.
-    function surfaceCorruptEntry(key, reason) {
-      if (corruptKeysSeen.has(key)) return;
-      corruptKeysSeen.add(key);
+    // SAFETY: surface any Firestore-side read error (permission denied,
+    // network failure, unknown uid) to the driver-side operator rather
+    // than silently hiding it. Dedupe by error code so we don't spam.
+    function surfaceError(code, reason) {
+      if (errorsSeen.has(code)) return;
+      errorsSeen.add(code);
       const el = document.getElementById('corrupt-banner');
       if (!el) return;
-      const count = corruptKeysSeen.size;
-      el.textContent = '⚠️ ' + count + ' share session' + (count === 1 ? '' : 's') +
-        ' could not be read (last: ' + key + ' — ' + reason + ')';
+      el.textContent = '⚠️ share unavailable — ' + reason + ' (' + code + ')';
       el.style.display = 'block';
     }
 
-    document.getElementById('session-id').textContent = `session: ${sessionId}`;
-    console.log(`[Receiver] Listening on localStorage key: ${storageKey}`);
-    console.log(`[Receiver] Current localStorage keys:`, Object.keys(localStorage).filter(k => k.startsWith('share_')));
+    // Short display label: first 6 chars of uid is enough to distinguish in the header.
+    const sessionShort = driverUid ? driverUid.slice(0, 6) + '…' : '—';
+    document.getElementById('session-id').textContent = `driver: ${sessionShort}`;
+    console.log('[Receiver] watching uid=' + driverUid);
 
-    // Diagnostic: log when the window is closing/navigating so we can tell if it's being closed
-    window.addEventListener('beforeunload', () => {
-      console.log('[Receiver] BEFOREUNLOAD fired — window is closing or navigating');
-    });
-    window.addEventListener('pagehide', () => {
-      console.log('[Receiver] PAGEHIDE fired');
-    });
-
-    // If no session param was provided, offer a picker with the active sessions
-    if (sessionId === 'default') {
-      showSessionPicker();
-    }
-
-    const LIVE_THRESHOLD_MS = 10000; // only show sessions pinging within last 10s
-
-    function showSessionPicker() {
-      const now = Date.now();
-
-      // Build a set of ended session IDs
-      const endedIds = new Set();
-      Object.keys(localStorage).forEach(key => {
-        if (key.endsWith('_ended')) {
-          endedIds.add(key.replace(/^share_/, '').replace(/_ended$/, ''));
-        }
-      });
-
-      // Auto-cleanup stale entries (no ping for >30s OR explicitly ended)
-      const toDelete = [];
-      Object.keys(localStorage).forEach(key => {
-        if (!key.startsWith('share_')) return;
-        if (key.endsWith('_ended')) {
-          // also remove the underlying data for ended sessions
-          toDelete.push(key);
-          toDelete.push(key.replace(/_ended$/, ''));
-          return;
-        }
-        try {
-          const data = JSON.parse(localStorage.getItem(key));
-          if (!data || !data.timestamp || now - data.timestamp > 30000) {
-            toDelete.push(key);
-          }
-        } catch (e) {
-          // Corrupt entry — prune it but log the failing key so a real
-          // bug (e.g. a serialization regression) isn't hidden.
-          console.warn('[Receiver] pruning corrupt share key', key, e.message);
-          surfaceCorruptEntry(key, 'unparseable JSON');
-          toDelete.push(key);
-        }
-      });
-      toDelete.forEach(k => localStorage.removeItem(k));
-      if (toDelete.length) console.log('[Receiver] Cleaned up stale keys:', toDelete);
-
-      // Now collect only LIVE candidates (pinged within LIVE_THRESHOLD_MS)
-      const candidates = [];
-      Object.keys(localStorage).forEach(key => {
-        if (!key.startsWith('share_') || key.endsWith('_ended')) return;
-        const sessId = key.replace(/^share_/, '');
-        if (endedIds.has(sessId)) return;
-        try {
-          const data = JSON.parse(localStorage.getItem(key));
-          if (data && data.timestamp && now - data.timestamp <= LIVE_THRESHOLD_MS) {
-            candidates.push({
-              key,
-              sessionId: sessId,
-              data,
-              ageSec: Math.round((now - data.timestamp) / 1000)
-            });
-          }
-        } catch (e) {
-          // Corrupted share entry — log which key so a real bug isn't hidden.
-          console.warn('[Receiver] corrupted share entry for key=' + key + ':', e.message);
-          surfaceCorruptEntry(key, 'unparseable JSON');
-        }
-      });
-
-      const picker = document.getElementById('session-picker');
-      document.getElementById('waiting-title').textContent = 'No session specified';
-
-      if (candidates.length === 0) {
-        document.getElementById('waiting-body').innerHTML =
-          'No live sessions found.<br><br>' +
-          'Open this page from the sender by clicking <strong>"📡 Share Live Location"</strong>.<br>' +
-          'A new window with the correct session ID will open automatically.';
-        picker.style.display = 'none';
-        // Recheck every few seconds in case a sender starts sharing
-        setTimeout(() => { if (sessionId === 'default') showSessionPicker(); }, 3000);
-        return;
-      }
-
-      candidates.sort((a, b) => b.data.timestamp - a.data.timestamp);
-
-      // If exactly one live session, auto-redirect to it
-      if (candidates.length === 1) {
-        console.log('[Receiver] Single live session found, auto-switching to:', candidates[0].sessionId);
-        location.href = `?session=${candidates[0].sessionId}`;
-        return;
-      }
-
-      let html = '<p style="margin-bottom:12px;color:#555">Multiple live sessions. Pick one:</p>';
-      candidates.forEach(c => {
-        html += `
-          <a href="?session=${c.sessionId}"
-             style="display:block;padding:10px 14px;margin-bottom:8px;border:1px solid #4caf50;border-radius:6px;text-decoration:none;color:#333;background:white">
-            <div style="font-weight:700">🟢 ${c.data.name || 'Anonymous'} <span style="color:#888;font-size:11px;font-family:monospace">(${c.sessionId})</span></div>
-            <div style="font-size:12px;color:#666">Live · last ping ${c.ageSec}s ago · ${c.data.lat?.toFixed(4)}, ${c.data.lng?.toFixed(4)}</div>
-          </a>
-        `;
-      });
-      picker.innerHTML = html;
-      picker.style.display = 'block';
+    // If no uid param was provided, there's nothing to subscribe to.
+    // Show a permanent "invalid link" message. The old session-picker that
+    // scanned localStorage is gone — with Firestore, the uid in the URL is
+    // the capability token; there's no way to enumerate other drivers.
+    if (!driverUid) {
+      document.getElementById('waiting-title').textContent = 'Invalid share link';
+      document.getElementById('waiting-body').innerHTML =
+        'This link is missing a <code>?uid=...</code> parameter.<br><br>' +
+        'Ask the driver to re-share their link from the <strong>"📡 Share Live Location"</strong> button.';
     }
 
     // ========== GOOGLE MAPS INIT ==========
     async function onGoogleMapsLoaded() {
-      // AdvancedMarkerElement lives in the marker library.
       if (google.maps.importLibrary) await google.maps.importLibrary('marker');
       map = new google.maps.Map(document.getElementById('map'), {
         center: { lat: 32.4, lng: 34.88 },
@@ -412,34 +329,77 @@
         streetViewControl: false,
         fullscreenControl: false
       });
-      startPolling();
+      if (driverUid) startFirestoreSubscription();
     }
 
-    // ========== POLLING ==========
-    function startPolling() {
-      setInterval(tick, POLL_INTERVAL_MS);
-      tick(); // immediate first read
+    // ========== FIRESTORE SUBSCRIPTION ==========
+    // Replace the old localStorage poll (500ms setInterval + JSON.parse) with
+    // an onSnapshot listener. Firestore pushes updates over a persistent
+    // channel — no polling, no stale caches. The offline/reconnect UX is
+    // preserved by checking `updatedAt` against OFFLINE_THRESHOLD_MS and
+    // by honoring the `endedAt` field the driver sets on stopSharing.
+    function startFirestoreSubscription() {
+      if (!window.firebase) {
+        // Firebase module not loaded yet; retry on ready event.
+        window.addEventListener('firebase-ready', startFirestoreSubscription, { once: true });
+        return;
+      }
+      const { db } = window.firebase;
+      const { doc, onSnapshot } = window.firebaseAPIs;
+
+      unsubscribe = onSnapshot(
+        doc(db, 'shares', driverUid),
+        (snap) => {
+          if (!snap.exists()) {
+            // The driver hasn't started sharing yet, or the document was
+            // deleted. Treat as "waiting" until a doc appears.
+            if (!sawFirstData) {
+              // Keep the initial splash but update copy to match reality.
+              const waitingBody = document.getElementById('waiting-body');
+              if (waitingBody) {
+                waitingBody.innerHTML =
+                  'Waiting for the driver to start sharing...<br><br>' +
+                  'This page will update automatically the moment they hit <strong>"📡 Share Live Location"</strong>.';
+              }
+            }
+            return;
+          }
+          sawFirstData = true;
+          handleDriverUpdate(snap.data());
+        },
+        (err) => {
+          // Firestore read error — permission-denied / not-found / offline.
+          // Surface via the corrupt-banner so the viewer knows the feed
+          // isn't live.
+          console.error('[Receiver] onSnapshot error:', err);
+          surfaceError(err.code || 'unknown', err.message || 'read failed');
+          setStatus('lost', 'Error');
+        }
+      );
+
+      // Stale-check loop: even with realtime updates, we need to flip
+      // to "lost" if the driver's device stops writing (battery dies,
+      // tunnel, app backgrounded, etc). Firestore can't push us that
+      // fact — we have to infer it from `updatedAt` going stale.
+      setInterval(staleCheck, STALE_CHECK_INTERVAL_MS);
     }
 
-    let tickCount = 0;
-    function tick() {
-      tickCount++;
-      const raw = localStorage.getItem(storageKey);
+    function handleDriverUpdate(data) {
       const now = Date.now();
 
-      // Periodic status log (every 10 ticks = 5 seconds)
-      if (tickCount % 10 === 0) {
-        const sinceSec = lastUpdateTs ? Math.round((now - lastUpdateTs) / 1000) : 'n/a';
-        console.log(`[Receiver] tick #${tickCount} | key=${storageKey} | data=${raw ? 'present' : 'null'} | lastUpdateAgo=${sinceSec}s | isOffline=${isOffline}`);
+      // Hide the splash on first valid data.
+      const waitingEl = document.getElementById('waiting');
+      if (waitingEl && !waitingEl.classList.contains('hidden')) {
+        waitingEl.classList.add('hidden');
       }
 
-      // Check for explicit "_ended" marker → treat as offline
-      const endedMarker = localStorage.getItem(storageKey + '_ended');
-      if (endedMarker && lastUpdateTs > 0) {
+      // Driver explicitly stopped sharing (stopSharing set endedAt).
+      if (data.endedAt) {
         if (!isOffline) {
-          console.log('[Receiver] Sender stopped sharing explicitly → offline');
+          console.log('[Receiver] driver set endedAt → offline');
           isOffline = true;
           lostSince = now;
+          if (lastKnownLocation) renderSender(lastKnownLocation);
           showLostOverlay();
           setStatus('lost', 'Lost');
         }
@@ -447,29 +407,20 @@
         return;
       }
 
-      if (!raw) return;
+      // Firestore Timestamps carry a toMillis(); guard for the edge where
+      // a local cache write lacks a server-assigned serverTimestamp() yet
+      // (the first write before it echoes back from the server).
+      const serverMs = data.updatedAt && data.updatedAt.toMillis
+        ? data.updatedAt.toMillis()
+        : now;
 
-      let data;
-      try { data = JSON.parse(raw); } catch (e) {
-        console.warn('[Receiver] failed to parse share payload:', e.message);
-        surfaceCorruptEntry(storageKey, 'unparseable payload');
-        return;
-      }
-
-      // Hide splash on first valid data
-      const waitingEl = document.getElementById('waiting');
-      if (waitingEl && !waitingEl.classList.contains('hidden')) {
-        waitingEl.classList.add('hidden');
-      }
-
-      // Is this a new ping?
-      if (data.timestamp > lastUpdateTs) {
-        lastUpdateTs = data.timestamp;
+      if (serverMs > lastUpdateTs) {
+        lastUpdateTs = serverMs;
         lastKnownLocation = data;
         renderSender(data);
 
         if (isOffline) {
-          console.log('[Receiver] New ping received → back online');
+          console.log('[Receiver] new update received → back online');
           hideLostOverlay();
           showReconnectedBanner();
           isOffline = false;
@@ -477,18 +428,19 @@
         } else {
           setStatus('live', 'Live');
         }
-      } else {
-        // Stale: check how long since last good ping
-        const since = now - lastUpdateTs;
-        if (lastUpdateTs > 0 && since > OFFLINE_THRESHOLD_MS && !isOffline) {
-          console.log(`[Receiver] ${since}ms without a new ping (threshold=${OFFLINE_THRESHOLD_MS}ms) → OFFLINE`);
-          isOffline = true;
-          lostSince = now;
-          showLostOverlay();
-          setStatus('lost', 'Lost');
-        }
       }
+    }
 
+    function staleCheck() {
+      if (!lastUpdateTs) return;  // no baseline yet
+      const since = Date.now() - lastUpdateTs;
+      if (since > OFFLINE_THRESHOLD_MS && !isOffline) {
+        console.log(`[Receiver] ${since}ms since last update → OFFLINE`);
+        isOffline = true;
+        lostSince = Date.now();
+        showLostOverlay();
+        setStatus('lost', 'Lost');
+      }
       if (isOffline) updateLostTimer();
     }
 
@@ -530,11 +482,23 @@
       document.getElementById('info-name').textContent = data.name || 'Anonymous';
       document.getElementById('info-coords').textContent =
         `${data.lat.toFixed(5)}, ${data.lng.toFixed(5)}`;
-      document.getElementById('info-last').textContent = new Date(data.timestamp).toLocaleTimeString();
+      // Firestore returns a Timestamp; for local pending writes that haven't
+      // echoed back yet, updatedAt may briefly be null — fall back to "now".
+      const updatedMs = data.updatedAt && data.updatedAt.toMillis
+        ? data.updatedAt.toMillis() : Date.now();
+      document.getElementById('info-last').textContent = new Date(updatedMs).toLocaleTimeString();
       document.getElementById('info-alert').textContent =
         data.inDanger ? '⚠️ IN DANGER ZONE' : '✓ Safe';
       document.getElementById('info-alert').style.color = data.inDanger ? '#d32f2f' : '#2e7d32';
     }
+
+    // Clean up the Firestore listener when the tab closes so we don't hold
+    // onto a dangling subscription.
+    window.addEventListener('pagehide', () => {
+      if (typeof unsubscribe === 'function') {
+        try { unsubscribe(); } catch (_) { /* best-effort */ }
+      }
+    });
 
     function setStatus(cls, text) {
       const el = document.getElementById('status');
@@ -605,7 +569,7 @@
 
   <!-- Replace YOUR_API_KEY - same key as index.html -->
   <script async
-    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAn00DOQBkWkqQDsRppsHfLgO0oXfv6GDI&loading=async&callback=onGoogleMapsLoaded">
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB-SaMrmFoDJgOPbJMKIg7aZujHAEIBT68&loading=async&callback=onGoogleMapsLoaded">
   </script>
 </body>
 </html>

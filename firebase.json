@@ -1,0 +1,22 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      ".firebase/**",
+      "**/.*",
+      "**/node_modules/**",
+      "docs/**",
+      "tests/**",
+      "download-polygons.js",
+      "test-route-filter.html",
+      "firestore.rules",
+      "firestore.indexes.json"
+    ]
+  }
+}

@@ -46,6 +46,12 @@ $RECYCLE.BIN/
 *.bak
 .cache/
 
+# ---- Firebase CLI runtime artifacts (config files ARE tracked) ----
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
 # ---- Build output (future-proof) ----
 dist/
 build/

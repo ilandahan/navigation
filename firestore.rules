@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// Security model for the POC share feature:
+//   /shares/{uid}  — one document per signed-in driver, keyed by their
+//                     Firebase Auth UID. The UID is the capability token:
+//                     knowing it is sufficient to read the share. This
+//                     matches the "give the URL to mom/dad" threat model
+//                     (same as WhatsApp/Waze Live Location).
+//
+// Invariants enforced here:
+//   - Only the owner (request.auth.uid == uid) can write.
+//   - Anyone can read. There is no way to enumerate shares — clients
+//     must already know the UID from the URL.
+//   - Everything else is denied by default.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /shares/{uid} {
+      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if true;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

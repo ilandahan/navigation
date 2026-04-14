@@ -6,6 +6,35 @@
   <title>Pikud HaOref Route Alert POC</title>
   <link rel="preconnect" href="https://maps.googleapis.com">
   <link rel="preconnect" href="https://maps.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+
+  <!-- Firebase v10 modular SDK from the CDN — no build step. App, Auth,
+       and Firestore are loaded as ES modules; the handles are attached to
+       window.firebase so the inline app script (which is NOT a module) can
+       call them. The 'firebase-ready' event fires once init is complete.
+       See firebaseConfig.js for the (public-safe) project config. -->
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+    import {
+      getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
+    } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+    import {
+      getFirestore, doc, setDoc, updateDoc, serverTimestamp
+    } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+    import { firebaseConfig } from './firebaseConfig.js';
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    window.firebase = { app, auth, db };
+    window.firebaseAPIs = {
+      GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+      doc, setDoc, updateDoc, serverTimestamp
+    };
+    window.dispatchEvent(new CustomEvent('firebase-ready'));
+  </script>
   <style>
     /* ============ Design tokens ============ */
     /* Single source of truth for radius/shadow/spacing/colors. Every panel
@@ -342,6 +371,111 @@
     }
     .live-status-list .lsl-item.starting::before { background: #e37400; }  /* amber */
     .live-status-list .lsl-item.off::before      { background: #c62828; }  /* red */
+
+    /* Live-tab auth gate. Shown inside #live-controls when the user isn't
+       signed in yet — Live mode is disabled until they authenticate. The
+       gate is a single card: icon + short explainer + Google Sign-In button.
+       Sim tab remains fully usable without sign-in (it's the demo mode). */
+    .auth-gate-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 16px;
+      background: #fff;
+      border: 1px solid var(--color-border);
+      border-radius: 10px;
+      text-align: center;
+    }
+    /* `display: flex` above overrides the browser's default
+       `[hidden] { display: none }`, so make the hidden rule explicit. */
+    .auth-gate-card[hidden] { display: none; }
+    .auth-gate-card .gate-icon {
+      font-size: 28px;
+      line-height: 1;
+    }
+    .auth-gate-card .gate-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--color-text);
+    }
+    .auth-gate-card .gate-copy {
+      font-size: 12px;
+      color: var(--color-text-muted, #5f6368);
+      line-height: 1.45;
+      max-width: 320px;
+    }
+    #btn-signin {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 14px;
+      margin-top: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      background: #fff;
+      color: #3c4043;
+      border: 1px solid #dadce0;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #btn-signin:hover { background: #f8f9fa; }
+    #btn-signin:disabled { opacity: 0.6; cursor: default; }
+    #btn-signin .g-logo {
+      width: 18px; height: 18px; flex-shrink: 0;
+    }
+
+    /* Signed-in strip — small user summary above the existing status chips. */
+    .auth-user {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--color-text);
+      background: var(--color-surface-muted);
+      border-radius: 6px;
+    }
+    .auth-user.visible { display: flex; }
+    .auth-user .auth-email {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .auth-user button {
+      background: none;
+      border: 1px solid transparent;
+      color: #1976d2;
+      font-size: 12px;
+      padding: 2px 6px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .auth-user button:hover { background: #e3f2fd; }
+
+    /* Live-tab navigation control (shown only after sign-in). Mirrors the
+       green/red styling of the Simulation tab's Start/Stop button so the
+       mental model carries over. */
+    #btn-start-driving, #btn-stop-driving {
+      width: 100%;
+      padding: 12px 16px;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background 0.15s;
+    }
+    #btn-start-driving { background: #00897b; }
+    #btn-start-driving:hover { background: #00695c; }
+    #btn-stop-driving { background: #d32f2f; }
+    #btn-stop-driving:hover { background: #b71c1c; }
 
     /* ============ Google-Maps-style From/To inputs ============ */
     /* The .route-inputs block stacks the From/To rows, the primary actions
@@ -837,6 +971,122 @@
     #message-box.arrived button { background: #2e7d32; }
     #message-box.arrived button:hover { background: #1b5e20; }
 
+    /* Shared "hard hide" class — `display: none !important` beats any
+       other display rule. Use via setPanelVisible(el, v) which also toggles
+       the `hidden` HTML attribute for accessibility. Fixes the earlier
+       bug where `display: flex` overrode `hidden` on the auth-gate card. */
+    .hidden { display: none !important; }
+
+    /* Turn-by-turn directions panel — swaps in for #route-options while
+       driving (Sim or Live). Two-row layout: big current-maneuver card on
+       top, small "Then" next-step + ETA underneath. Controls (voice +
+       recalc) live at the bottom. Stays inside the sidebar so the mental
+       model is "planning view ↔ driving view" — no floating overlay. */
+    #directions-tbt {
+      margin-top: var(--section-gap);
+      padding: 12px 14px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--panel-radius, 10px);
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #directions-tbt.tbt-offroute { background: #fff8e1; border-color: #e37400; }
+    #directions-tbt .tbt-current {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    #directions-tbt .tbt-maneuver-icon {
+      font-size: 32px;
+      line-height: 1;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-surface-muted);
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+    #directions-tbt .tbt-text { flex: 1; min-width: 0; }
+    #directions-tbt .tbt-distance {
+      font-size: 13px;
+      color: var(--color-text-muted, #5f6368);
+      font-weight: 500;
+    }
+    #directions-tbt .tbt-instruction {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--color-text);
+      line-height: 1.3;
+      overflow-wrap: break-word;
+    }
+    #directions-tbt .tbt-next {
+      display: flex;
+      gap: 6px;
+      padding: 6px 10px;
+      background: var(--color-surface-muted);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--color-text);
+    }
+    #directions-tbt .tbt-next-label {
+      color: var(--color-text-muted, #5f6368);
+      font-weight: 500;
+      flex-shrink: 0;
+    }
+    #directions-tbt .tbt-next-instruction {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #directions-tbt .tbt-eta {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+      font-size: 12px;
+      color: var(--color-text-muted, #5f6368);
+    }
+    #directions-tbt .tbt-eta-time { font-weight: 600; color: var(--color-text); }
+    #directions-tbt .tbt-eta-sep { opacity: 0.5; }
+    #directions-tbt .tbt-controls {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    #btn-tbt-voice {
+      background: var(--color-surface-muted);
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 14px;
+      cursor: pointer;
+      line-height: 1;
+    }
+    #btn-tbt-voice[aria-pressed="false"] { opacity: 0.5; }
+    #btn-tbt-voice:hover { background: #f0f0f0; }
+    #btn-tbt-recalc {
+      background: #00897b;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #btn-tbt-recalc:hover { background: #00695c; }
+    #directions-tbt .tbt-offroute-banner {
+      padding: 8px 10px;
+      background: #e37400;
+      color: #fff;
+      font-size: 12px;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+
     /* Route options — now inline inside the sidebar, Google-Maps-style cards */
     #route-options {
       display: none;
@@ -1204,6 +1454,34 @@
       </div>
       <!-- Route alternatives render here inline (Google-Maps style) -->
       <div id="route-options"></div>
+
+      <!-- Turn-by-turn directions — shown while the user is actively driving
+           (Sim running OR Live Start-Driving pressed). Swaps with #route-options
+           via setPanelVisible(). Single source of truth for "next maneuver /
+           ETA"; all per-tick updates funnel through renderTbt(). -->
+      <div id="directions-tbt" class="hidden" aria-live="polite">
+        <div class="tbt-current">
+          <div class="tbt-maneuver-icon" data-maneuver="straight" aria-hidden="true">↑</div>
+          <div class="tbt-text">
+            <div class="tbt-distance">Calculating…</div>
+            <div class="tbt-instruction">—</div>
+          </div>
+        </div>
+        <div class="tbt-next">
+          <span class="tbt-next-label">Then</span>
+          <span class="tbt-next-instruction">—</span>
+        </div>
+        <div class="tbt-eta">
+          <span class="tbt-eta-time">—</span>
+          <span class="tbt-eta-sep">·</span>
+          <span class="tbt-eta-remaining">—</span>
+        </div>
+        <div class="tbt-controls">
+          <button id="btn-tbt-voice" type="button" aria-pressed="true" title="Toggle voice">🔊</button>
+          <button id="btn-tbt-recalc" type="button" class="hidden">Recalculate now</button>
+        </div>
+        <div class="tbt-offroute-banner hidden" role="status"></div>
+      </div>
     </div>
 
     <!-- Simulation-specific controls (Start + speed + manual alert) -->
@@ -1223,9 +1501,49 @@
       </div>
     </div>
 
-    <!-- Live mode: real GPS + real Pikud HaOref API (all auto-enabled) -->
+    <!-- Live mode: real GPS + real Pikud HaOref API (all auto-enabled).
+         Gated behind Google Sign-In — the card below is swapped for the
+         actual live content only after a successful auth. -->
     <div id="live-controls" class="mode-section" hidden>
-      <div id="live-status" class="live-status-list"></div>
+      <!-- Signed-out state: full-card auth gate. -->
+      <div id="live-auth-gate" class="auth-gate-card">
+        <div class="gate-icon">🔑</div>
+        <div class="gate-title">Sign in to use Live mode</div>
+        <div class="gate-copy">
+          Live mode uses your real GPS and the Pikud HaOref alert feed, and can share
+          your location with family through a personal link. Sign in with Google to continue.
+        </div>
+        <button id="btn-signin" type="button">
+          <svg class="g-logo" viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          <span id="btn-signin-label">Sign in with Google</span>
+        </button>
+      </div>
+      <!-- Signed-in state: user strip + either Start Driving (idle) or
+           live status + Stop Driving (actively navigating). GPS + Pikud
+           HaOref polling do NOT auto-start on tab switch; the driver
+           explicitly opts in via the button below. -->
+      <div id="live-content" hidden>
+        <div id="auth-user" class="auth-user visible">
+          <span class="auth-email" id="auth-email">—</span>
+          <button type="button" id="btn-signout">Sign out</button>
+        </div>
+
+        <!-- Idle state (signed in, not yet driving) -->
+        <div id="live-idle">
+          <button type="button" id="btn-start-driving">🚗 Start Driving</button>
+        </div>
+
+        <!-- Driving state (GPS + alert polling active) -->
+        <div id="live-driving" hidden>
+          <div id="live-status" class="live-status-list"></div>
+          <button type="button" id="btn-stop-driving">🛑 Stop Driving</button>
+        </div>
+      </div>
     </div>
 
     <!-- Shared: share live location (both modes) -->
@@ -1342,10 +1660,19 @@
 
     // Route-aware alert filter state.
     // currentRouteMeta = { path, cumulativeMeters } — rebuilt on each route selection.
+    // currentStepIndex = [{ stepIdx, legIdx, instructionHtml, instructionText,
+    //                       maneuver, distanceMeters, startPathIdx, endPathIdx,
+    //                       startCumM, endCumM }, ...] — per-step metadata for
+    //   the turn-by-turn directions renderer. Built alongside currentRouteMeta
+    //   from the original leg/step structure; empty when no route is loaded.
+    // currentStepCursor = index into currentStepIndex. Monotonically advances
+    //   as the driver progresses; linear-scan fallback on jump-back (reroute).
     // recentAlertIds = Map<id, firstSeenMs> — dedup window (2 min) for real-feed polling.
     // lastDangerCheckAt = ms — throttle checkDangerZone() to 500ms (2Hz per tech spec) inside simStep.
     // lastAlertStats = { received, shown, discarded } — telemetry for the live status line.
     let currentRouteMeta = null;
+    let currentStepIndex = [];
+    let currentStepCursor = 0;
     const recentAlertIds = new Map();
     const ALERT_DEDUP_WINDOW_MS = 120000;
     let lastDangerCheckAt = 0;
@@ -1519,66 +1846,85 @@
       if (panel) panel.classList.remove('visible');
     }
 
-    function cleanupOldShareData() {
-      // Remove any share_* keys that are more than 1 hour old
-      const oneHourAgo = Date.now() - 3600000;
-      Object.keys(localStorage).forEach(key => {
-        if (!key.startsWith('share_')) return;
-        try {
-          if (key.endsWith('_ended')) {
-            const t = parseInt(localStorage.getItem(key));
-            if (t && t < oneHourAgo) {
-              localStorage.removeItem(key);
-              localStorage.removeItem(key.replace(/_ended$/, ''));
-            }
-          } else {
-            const data = JSON.parse(localStorage.getItem(key));
-            if (data && data.timestamp && data.timestamp < oneHourAgo) {
-              localStorage.removeItem(key);
-            }
-          }
-        } catch (e) {
-          console.warn('[share-cleanup] skipping unparseable key', key, e.message);
-        }
-      });
+    // ========== GOOGLE SIGN-IN (Firebase Auth) ==========
+    // The driver must be signed in before sharing can start — their Firebase
+    // UID becomes the share document id in Firestore (/shares/<uid>). No
+    // sign-in is required on the receiver side; knowing the UID is enough
+    // per the firestore.rules policy (world-read, owner-write).
+    async function signInWithGoogle() {
+      if (!window.firebase || !window.firebaseAPIs) {
+        showToast('⚠️ Sign-in unavailable — Firebase not loaded', true, 5000);
+        return null;
+      }
+      const { auth } = window.firebase;
+      const { GoogleAuthProvider, signInWithPopup } = window.firebaseAPIs;
+      try {
+        const result = await signInWithPopup(auth, new GoogleAuthProvider());
+        console.log('[Auth] signed in as', result.user.displayName, result.user.uid);
+        return result.user;
+      } catch (e) {
+        console.error('[Auth] sign-in failed:', e);
+        showToast('⚠️ Sign-in failed: ' + (e.message || e.code || 'unknown'), true, 5000);
+        return null;
+      }
+    }
+    async function signOutCurrent() {
+      if (!window.firebase) return;
+      const { auth } = window.firebase;
+      const { signOut } = window.firebaseAPIs;
+      try { await signOut(auth); console.log('[Auth] signed out'); }
+      catch (e) { console.error('[Auth] sign-out failed:', e); }
     }
 
-    function startSharing() {
+    async function startSharing() {
       if (shareInterval) return; // already sharing
 
-      cleanupOldShareData();
+      // SAFETY: require sign-in. Without a UID we cannot write to Firestore
+      // under the owner-write rule. Refuse loudly rather than silently no-op.
+      if (!window.firebase || !window.firebase.auth.currentUser) {
+        const user = await signInWithGoogle();
+        if (!user) return;  // user dismissed the popup or it failed
+      }
+      const user = window.firebase.auth.currentUser;
+      shareSessionId = user.uid;
+      shareSenderName = user.displayName || user.email || 'Driver';
 
-      shareSessionId = Math.random().toString(36).slice(2, 10);
-      const url = `./receiver.html?session=${shareSessionId}`;
+      const url = `./receiver.html?uid=${encodeURIComponent(user.uid)}`;
       const fullUrl = new URL(url, location.href).href;
 
-      // Open receiver in a new TAB (not a popup) - much more reliable, won't close unexpectedly
+      // Open receiver in a new tab — same UX as before. The receiver uses
+      // the uid from the URL to subscribe to the Firestore doc.
       const w = window.open(url, '_blank');
       if (!w) {
         console.warn('[Share] Tab blocked. Receiver URL:', fullUrl);
       }
 
-      // Always show the URL in a persistent dialog so user can open/copy/share it
-      showShareLinkDialog(fullUrl, shareSessionId);
+      showShareLinkDialog(fullUrl, user.uid);
 
       shareSimulateOffline = false;
-      // Push location every 2 seconds
       shareInterval = setInterval(pushSharedLocation, 2000);
       pushSharedLocation(); // immediate first push
-      console.log(`[Share] Started session ${shareSessionId}. Receiver URL: ${url}`);
-      showToast('📡 Sharing live location — session: ' + shareSessionId);
+      console.log(`[Share] Started for uid=${user.uid}. Receiver URL: ${fullUrl}`);
+      showToast('📡 Sharing live location — ' + shareSenderName);
       updateShareButton();
     }
 
-    function stopSharing() {
+    async function stopSharing() {
       if (shareInterval) {
         clearInterval(shareInterval);
         shareInterval = null;
       }
-      if (shareSessionId) {
-        // Leave the last known data in localStorage so receiver shows "lost" state
-        // but no longer push new updates
-        localStorage.setItem(`share_${shareSessionId}_ended`, Date.now().toString());
+      if (shareSessionId && window.firebase) {
+        // Mark the share as ended by setting endedAt. The receiver flips to
+        // its "lost" overlay on this field change. Write is best-effort: if
+        // it fails we still tear down local state so the UI doesn't lie.
+        const { db } = window.firebase;
+        const { doc, updateDoc, serverTimestamp } = window.firebaseAPIs;
+        try {
+          await updateDoc(doc(db, 'shares', shareSessionId), { endedAt: serverTimestamp() });
+        } catch (e) {
+          console.warn('[Share] failed to mark endedAt (teardown proceeds):', e.message);
+        }
       }
       shareSessionId = null;
       shareSimulateOffline = false;
@@ -1588,12 +1934,13 @@
       updateShareButton();
     }
 
-    function pushSharedLocation() {
+    async function pushSharedLocation() {
       if (!shareSessionId) return;
       if (shareSimulateOffline) {
         console.log('[Share] Skipping push — offline simulation active');
         return;
       }
+      if (!window.firebase) return;  // Firebase not ready yet; next tick will retry
 
       // Prefer actual driver position; fall back to route origin for pre-simulation sharing
       let lat, lng, accuracy = null;
@@ -1610,31 +1957,30 @@
         return; // nothing to share yet
       }
 
+      const { db } = window.firebase;
+      const { doc, setDoc, serverTimestamp } = window.firebaseAPIs;
       const data = {
         name: shareSenderName,
-        lat: lat,
-        lng: lng,
-        timestamp: Date.now(),
+        lat, lng, accuracy,
         inDanger: insideDangerZone,
-        accuracy: accuracy,
-        status: driverMarker ? (isRunning ? 'driving' : 'gps-tracking') : 'waiting-to-drive'
+        status: driverMarker ? (isRunning ? 'driving' : 'gps-tracking') : 'waiting-to-drive',
+        updatedAt: serverTimestamp(),
+        endedAt: null
       };
       try {
-        const key = `share_${shareSessionId}`;
-        localStorage.setItem(key, JSON.stringify(data));
-        console.log(`[Share] wrote ${key}:`, data);
+        await setDoc(doc(db, 'shares', shareSessionId), data, { merge: true });
         shareWriteFailures = 0;
       } catch (e) {
         // SAFETY: do NOT silently swallow — the user thinks their location
         // is being shared. Toast the first failure and stop sharing on
-        // repeated failures so the UI stops lying.
-        console.error('Failed to write share data:', e);
+        // repeated failures so the UI stops lying. (Preserved S8 contract.)
+        console.error('Failed to write share data to Firestore:', e);
         shareWriteFailures = (shareWriteFailures || 0) + 1;
         if (shareWriteFailures === 1) {
-          showToast('⚠️ Share failed — storage unavailable (' + (e.message || 'unknown') + ')', true, 5000);
+          showToast('⚠️ Share failed — ' + (e.code || e.message || 'unknown'), true, 5000);
         }
         if (shareWriteFailures >= 3) {
-          showToast('⚠️ Sharing disabled after repeated storage failures', true, 8000);
+          showToast('⚠️ Sharing disabled after repeated Firestore failures', true, 8000);
           stopSharing();
         }
       }
@@ -1667,9 +2013,57 @@
             : '🏠 Simulate: Entered Shelter';
         }
       } else {
-        btn.textContent = '📡 Share Live Location';
+        const user = window.firebase && window.firebase.auth.currentUser;
+        btn.textContent = user
+          ? `📡 Share Live Location (${user.displayName || user.email || 'signed in'})`
+          : '🔑 Sign in & Share';
         btn.classList.remove('active');
         if (btnOffline) btnOffline.hidden = true;
+      }
+    }
+
+    // Wire the Firebase auth state listener as soon as Firebase finishes
+    // initializing. We re-render both the share button AND the dedicated
+    // sign-in panel in the Live tab on any sign-in/out so every visible
+    // surface reflects the same truth.
+    function wireAuthState() {
+      if (!window.firebase) return;
+      const { auth } = window.firebase;
+      const { onAuthStateChanged } = window.firebaseAPIs;
+      onAuthStateChanged(auth, (user) => {
+        console.log('[Auth] state change:', user ? user.uid : 'signed out');
+        // SAFETY: if the user drops out of auth mid-session (token expiry,
+        // cross-tab sign-out, revocation), tear down any active driving /
+        // sharing so we're not writing with a stale or missing token.
+        if (!user) {
+          if (isDriving) stopNavigation();
+          if (shareSessionId) stopSharing();
+        }
+        updateShareButton();
+        updateAuthPanel();
+      });
+    }
+    if (window.firebase) wireAuthState();
+    else window.addEventListener('firebase-ready', wireAuthState, { once: true });
+
+    // Paint the Live-tab auth state. Two mutually exclusive states inside
+    // the #live-controls card:
+    //   signed-out → show #live-auth-gate (the Sign-In card)
+    //   signed-in  → show #live-content (user strip + status chips)
+    // Sim mode is NOT gated — it runs without sign-in.
+    function updateAuthPanel() {
+      const gate = document.getElementById('live-auth-gate');
+      const content = document.getElementById('live-content');
+      const emailEl = document.getElementById('auth-email');
+      const user = window.firebase && window.firebase.auth.currentUser;
+      if (gate && content) {
+        gate.hidden = !!user;
+        content.hidden = !user;
+      }
+      if (emailEl) {
+        emailEl.textContent = user
+          ? (user.email || user.displayName || user.uid)
+          : '—';
       }
     }
 
@@ -1957,21 +2351,438 @@
       }
       updateRouteInfoCard();
 
+      // Flatten legs/steps into routePath AND simultaneously record the
+      // start/end indices of each step. We do both in one pass — the
+      // step's `path` is exactly what we push, so the bounds are free.
       routePath.length = 0;
-      for (const leg of route.legs) {
-        for (const step of leg.steps) {
-          for (const point of step.path) {
-            routePath.push(point);
+      currentStepIndex = [];
+      let globalStepIdx = 0;
+      for (let legIdx = 0; legIdx < route.legs.length; legIdx++) {
+        const leg = route.legs[legIdx];
+        if (!Array.isArray(leg.steps) || leg.steps.length === 0) {
+          throw new Error(`step-index build failed: leg ${legIdx} has no steps`);
+        }
+        for (let stepIdx = 0; stepIdx < leg.steps.length; stepIdx++) {
+          const step = leg.steps[stepIdx];
+          if (!Array.isArray(step.path) || step.path.length === 0) {
+            throw new Error(`step-index build failed: leg ${legIdx} step ${stepIdx} has empty path`);
           }
+          const startPathIdx = routePath.length;
+          for (const point of step.path) routePath.push(point);
+          const endPathIdx = routePath.length - 1;
+          if (endPathIdx < startPathIdx) {
+            throw new Error(`step-index build failed: leg ${legIdx} step ${stepIdx} produced negative range`);
+          }
+          const instructionHtml = step.instructions || '';
+          const instructionText = stripHtmlTags(instructionHtml) || '(continue)';
+          currentStepIndex.push({
+            stepIdx: globalStepIdx++,
+            legIdx, localStepIdx: stepIdx,
+            instructionHtml,
+            instructionText,
+            maneuver: parseManeuver(instructionText),
+            distanceMeters: (step.distance && step.distance.value) || 0,
+            startPathIdx, endPathIdx,
+            // startCumM / endCumM filled in below once cumulativeMeters is built
+            startCumM: 0, endCumM: 0
+          });
         }
       }
-      console.log(`Active route: #${index}, ${routePath.length} points`);
+      console.log(`Active route: #${index}, ${routePath.length} points, ${currentStepIndex.length} steps`);
 
       // Rebuild cumulative-distance metadata for the route-aware filter and
       // re-evaluate any alerts already on screen against the new route.
       if (global_hasAlertFilter && global_hasAlertFilter()) {
         currentRouteMeta = window.AlertRouteFilter.buildRouteWithCumulative(routePath);
+        // Backfill startCumM/endCumM on the step index now that we have totals.
+        for (const s of currentStepIndex) {
+          s.startCumM = currentRouteMeta.cumulativeMeters[s.startPathIdx];
+          s.endCumM   = currentRouteMeta.cumulativeMeters[s.endPathIdx];
+        }
         reEvaluateActiveAlertsForRoute();
+      }
+
+      // Reset TBT cursor + per-step TTS dedup whenever the route changes.
+      currentStepCursor = 0;
+      tbtSpokenKeys.clear();
+      tbtClearOffRouteState();
+    }
+
+    // ========== TURN-BY-TURN DIRECTIONS (TBT-001) ==========
+    // The TBT subsystem runs on every Sim tick (simStepBody) and every Live
+    // GPS update (watchPosition callback). Single-source-of-truth function
+    // renderTbt(pathIdx) owns ALL DOM writes. Cursor advances monotonically.
+    // Voice yields to alerts via voiceYieldUntilMs. Off-route triggers a
+    // 10s countdown then auto-recalc. No silent fallbacks: build failures
+    // throw, recalc failures show a persistent banner.
+
+    // ----- Helpers -----
+    function setPanelVisible(el, visible) {
+      if (!el) return;
+      el.hidden = !visible;
+      el.classList.toggle('hidden', !visible);
+    }
+    function stripHtmlTags(html) {
+      if (typeof html !== 'string') return '';
+      // Routes API instructions are HTML fragments like 'Turn <b>left</b> onto <span ...>King George</span>'.
+      // We build a detached div so the parser does the right thing without script execution risk
+      // (Routes API output is trusted Google content; this is defense-in-depth).
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      return (tmp.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    function parseManeuver(text) {
+      const t = (text || '').toLowerCase();
+      if (/u-?turn/.test(t)) return 'uturn';
+      if (/sharp left/.test(t)) return 'sharp-left';
+      if (/sharp right/.test(t)) return 'sharp-right';
+      if (/slight left/.test(t)) return 'slight-left';
+      if (/slight right/.test(t)) return 'slight-right';
+      if (/turn left/.test(t)) return 'turn-left';
+      if (/turn right/.test(t)) return 'turn-right';
+      if (/keep left/.test(t)) return 'keep-left';
+      if (/keep right/.test(t)) return 'keep-right';
+      if (/merge/.test(t)) return 'merge';
+      if (/exit|ramp/.test(t)) return 'exit';
+      if (/destination|arrive/.test(t)) return 'arrive';
+      return 'straight';
+    }
+    function maneuverArrow(m) {
+      switch (m) {
+        case 'turn-left':    return '↰';
+        case 'turn-right':   return '↱';
+        case 'sharp-left':   return '↺';
+        case 'sharp-right':  return '↻';
+        case 'slight-left':  return '⬉';
+        case 'slight-right': return '⬈';
+        case 'keep-left':    return '↖';
+        case 'keep-right':   return '↗';
+        case 'uturn':        return '↶';
+        case 'merge':        return '⤳';
+        case 'exit':         return '⤴';
+        case 'arrive':       return '◉';
+        default:             return '↑';
+      }
+    }
+    function formatMeters(m) {
+      if (m == null || !isFinite(m)) return '—';
+      if (m < 1000) return Math.round(m / 10) * 10 + ' m';
+      return (m / 1000).toFixed(m < 10000 ? 1 : 0) + ' km';
+    }
+    function formatSeconds(s) {
+      if (s == null || !isFinite(s) || s < 0) return '—';
+      const mins = Math.round(s / 60);
+      if (mins < 1) return '< 1 min';
+      if (mins < 60) return mins + ' min';
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      return h + 'h ' + m + 'm';
+    }
+
+    // ----- Voice TTS (yield-aware) -----
+    let tbtVoiceEnabled = (function () {
+      try { return localStorage.getItem('tbtVoiceEnabled') !== '0'; }
+      catch (_) { return true; }
+    })();
+    let voiceYieldUntilMs = 0;
+    const tbtSpokenKeys = new Set();   // dedup `${stepIdx}:${threshold}` per route
+
+    function tbtSetVoice(enabled) {
+      tbtVoiceEnabled = !!enabled;
+      try { localStorage.setItem('tbtVoiceEnabled', enabled ? '1' : '0'); } catch (_) {}
+      const btn = document.getElementById('btn-tbt-voice');
+      if (btn) {
+        btn.setAttribute('aria-pressed', String(!!enabled));
+        btn.textContent = enabled ? '🔊' : '🔇';
+      }
+      if (!enabled && typeof speechSynthesis !== 'undefined') {
+        try { speechSynthesis.cancel(); } catch (_) {}
+      }
+    }
+    function tbtYieldVoiceForAlert(ms) {
+      voiceYieldUntilMs = Date.now() + (ms || 20000);
+      if (typeof speechSynthesis !== 'undefined') {
+        try { speechSynthesis.cancel(); } catch (_) {}
+      }
+    }
+    function speakManeuver(stepIdx, threshold, text) {
+      if (!tbtVoiceEnabled) return;
+      if (Date.now() < voiceYieldUntilMs) return;     // yielding to alert
+      if (typeof speechSynthesis === 'undefined') return;
+      const key = stepIdx + ':' + threshold;
+      if (tbtSpokenKeys.has(key)) return;
+      tbtSpokenKeys.add(key);
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.05;
+        speechSynthesis.speak(u);
+      } catch (e) {
+        console.warn('[tbt] speech failed:', e.message);
+      }
+    }
+
+    // ----- Off-route state machine -----
+    let offRouteSinceMs = 0;
+    let offRouteTickCount = 0;
+    let recalcInFlight = false;
+    let offRouteCountdownTimer = null;
+    // Generation counter — bumped on every off-route entry AND on recovery.
+    // Each recalcRoute() captures its generation at start; if the generation
+    // has advanced by the time the async runRoutingRequest resolves (e.g.
+    // driver returned on-route mid-flight), the result is discarded so we
+    // never silently swap a valid current route for a stale recalc result.
+    let recalcGeneration = 0;
+    // Sticky failure flag — once recalc fails, do NOT auto-retrigger a new
+    // countdown; the driver must press #btn-tbt-recalc explicitly. Prevents
+    // the failure banner from being silently overwritten by a fresh count.
+    let recalcFailedAt = 0;
+
+    function tbtClearOffRouteState() {
+      offRouteSinceMs = 0;
+      offRouteTickCount = 0;
+      recalcInFlight = false;
+      recalcFailedAt = 0;
+      // Bump generation so any in-flight recalcRoute() sees its generation
+      // is stale and discards its result instead of applying it (review #2).
+      recalcGeneration += 1;
+      if (offRouteCountdownTimer) {
+        clearInterval(offRouteCountdownTimer);
+        offRouteCountdownTimer = null;
+      }
+      const tbt = document.getElementById('directions-tbt');
+      if (tbt) tbt.classList.remove('tbt-offroute');
+      const banner = tbt ? tbt.querySelector('.tbt-offroute-banner') : null;
+      if (banner) { banner.textContent = ''; setPanelVisible(banner, false); }
+      const recalcBtn = document.getElementById('btn-tbt-recalc');
+      if (recalcBtn) setPanelVisible(recalcBtn, false);
+    }
+    function tbtBeginOffRoute() {
+      const tbt = document.getElementById('directions-tbt');
+      if (!tbt) return;
+      tbt.classList.add('tbt-offroute');
+      const recalcBtn = document.getElementById('btn-tbt-recalc');
+      if (recalcBtn) setPanelVisible(recalcBtn, true);
+      const banner = tbt.querySelector('.tbt-offroute-banner');
+      if (!banner) return;
+      setPanelVisible(banner, true);
+      let remaining = 10;
+      banner.textContent = 'Off route — recalculating in ' + remaining + ' s';
+      offRouteCountdownTimer = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearInterval(offRouteCountdownTimer);
+          offRouteCountdownTimer = null;
+          tbtTriggerRecalc();
+        } else {
+          banner.textContent = 'Off route — recalculating in ' + remaining + ' s';
+        }
+      }, 1000);
+    }
+    async function tbtTriggerRecalc() {
+      if (recalcInFlight) return;
+      recalcInFlight = true;
+      // A manual retry clears the sticky failure flag so that if THIS attempt
+      // succeeds, the off-route system can engage normally again.
+      recalcFailedAt = 0;
+      // Capture this attempt's generation. If anything bumps recalcGeneration
+      // before our await resolves (driver returned on-route, route cleared,
+      // mode switched), discard the result — never silently swap routes
+      // out from under the driver. (Review #2.)
+      const myGen = recalcGeneration;
+      const banner = document.querySelector('#directions-tbt .tbt-offroute-banner');
+      if (banner) banner.textContent = 'Recalculating route…';
+      try {
+        if (!currentDestination) throw new Error('no destination set');
+        if (!driverMarker || !driverMarker.position) throw new Error('no driver position');
+        const driverPos = { lat: toLat(driverMarker.position), lng: toLng(driverMarker.position) };
+        const result = await runRoutingRequest({
+          origin: driverPos,
+          destination: currentDestination,
+          travelMode: currentTravelMode,
+          alternatives: true
+        });
+        if (myGen !== recalcGeneration) {
+          console.log('[tbt] recalc result discarded — generation advanced (driver recovered or cleared)');
+          recalcInFlight = false;
+          return;
+        }
+        alternativeRoutes = result.routes;
+        applySelectedRoute(0);   // also rebuilds currentStepIndex + resets cursor
+        drawAlternativePolylines();
+        updateRouteOptionsPanel();
+        tbtClearOffRouteState();
+        showToast('Route recalculated', false, 3000);
+      } catch (e) {
+        console.error('[tbt] recalc failed:', e);
+        // Sticky failure (review #3): do NOT let subsequent off-route ticks
+        // overwrite this banner with a fresh countdown. Driver must press
+        // #btn-tbt-recalc to retry, or return on-route to clear the state.
+        recalcFailedAt = Date.now();
+        if (banner) banner.textContent = 'Recalculation failed — tap "Recalculate now" to retry';
+        recalcInFlight = false;
+      }
+    }
+
+    // ----- Per-step lookup (cursor + linear-scan fallback) -----
+    function findStepForPathIdx(pathIdx) {
+      if (currentStepIndex.length === 0) return -1;
+      let cur = currentStepCursor;
+      // Forward monotonic — typical case, amortized O(1).
+      while (cur < currentStepIndex.length - 1
+        && pathIdx > currentStepIndex[cur].endPathIdx) {
+        cur++;
+      }
+      // Backward jump (driver re-routed to an earlier point) — linear-scan fallback.
+      if (pathIdx < currentStepIndex[cur].startPathIdx) {
+        for (let i = 0; i < currentStepIndex.length; i++) {
+          if (pathIdx >= currentStepIndex[i].startPathIdx
+            && pathIdx <= currentStepIndex[i].endPathIdx) { cur = i; break; }
+        }
+      }
+      currentStepCursor = cur;
+      return cur;
+    }
+
+    // ----- Renderer (the only function that writes to #directions-tbt) -----
+    function renderTbt(pathIdx) {
+      const tbt = document.getElementById('directions-tbt');
+      if (!tbt || tbt.classList.contains('hidden')) return;  // panel not active
+      if (currentStepIndex.length === 0 || !currentRouteMeta) return;
+
+      // Off-route signal (only meaningful in Live mode where pathIdx === -1).
+      if (pathIdx < 0) {
+        offRouteTickCount += 1;
+        if (offRouteSinceMs === 0) offRouteSinceMs = Date.now();
+        const elapsedMs = Date.now() - offRouteSinceMs;
+        // Trigger the countdown only if we're not already mid-countdown,
+        // not waiting on an in-flight recalc, AND not displaying a sticky
+        // failure banner (review #3) — otherwise the failure message would
+        // be silently overwritten.
+        if ((offRouteTickCount >= 3 || elapsedMs >= 5000)
+          && !offRouteCountdownTimer && !recalcInFlight && !recalcFailedAt) {
+          tbtBeginOffRoute();
+        }
+        return;  // hold the last rendered values
+      }
+      // Back on-route — clear any pending off-route UI.
+      if (offRouteSinceMs > 0 || offRouteCountdownTimer || recalcInFlight) {
+        const recoveredAfter = offRouteSinceMs ? Math.round((Date.now() - offRouteSinceMs) / 1000) : 0;
+        console.log('[tbt] off-route cleared after ' + recoveredAfter + 's');
+        tbtClearOffRouteState();
+      }
+
+      // Find current step.
+      const stepNum = findStepForPathIdx(pathIdx);
+      if (stepNum < 0) return;
+      const step = currentStepIndex[stepNum];
+      const next = currentStepIndex[stepNum + 1] || null;
+
+      // Distance to next maneuver (end of this step).
+      const drivenM = currentRouteMeta.cumulativeMeters[pathIdx] || 0;
+      const metersToNext = Math.max(0, step.endCumM - drivenM);
+
+      // Fire voice announcements at thresholds (each fires once per step).
+      const annotated = next ? next.instructionText : 'Arriving at destination';
+      if (metersToNext <= 100) speakManeuver(step.stepIdx, '100', annotated);
+      else if (metersToNext <= 500) speakManeuver(step.stepIdx, '500',
+        'In 500 meters, ' + annotated);
+      // On step transition (cursor advanced past this step), the cursor for the
+      // NEW step renders 'now-' announcement on first paint.
+      if (drivenM >= step.endCumM && next) {
+        speakManeuver(next.stepIdx, 'now', 'Now ' + next.instructionText);
+      }
+
+      // Paint DOM.
+      const iconEl = tbt.querySelector('.tbt-maneuver-icon');
+      const distEl = tbt.querySelector('.tbt-distance');
+      const instrEl = tbt.querySelector('.tbt-instruction');
+      const nextInstrEl = tbt.querySelector('.tbt-next-instruction');
+      const etaTimeEl = tbt.querySelector('.tbt-eta-time');
+      const etaRemainEl = tbt.querySelector('.tbt-eta-remaining');
+
+      const m = next ? next.maneuver : 'arrive';
+      if (iconEl) {
+        iconEl.dataset.maneuver = m;
+        iconEl.textContent = maneuverArrow(m);
+      }
+      if (distEl) distEl.textContent = next
+        ? 'In ' + formatMeters(metersToNext)
+        : 'Arriving in ' + formatMeters(metersToNext);
+      if (instrEl) instrEl.textContent = next ? next.instructionText : 'Destination ahead';
+      if (nextInstrEl) nextInstrEl.textContent = next && currentStepIndex[stepNum + 2]
+        ? currentStepIndex[stepNum + 2].instructionText
+        : '—';
+
+      const totalM = currentRouteMeta.cumulativeMeters[currentRouteMeta.cumulativeMeters.length - 1] || 0;
+      const remainingM = Math.max(0, totalM - drivenM);
+      const speedMps = (window.MapsShareLink && window.MapsShareLink.defaultSpeedMps)
+        ? window.MapsShareLink.defaultSpeedMps(currentTravelMode) : 13.9;
+      const remainingSec = remainingM / Math.max(speedMps, 0.1);
+      const eta = new Date(Date.now() + remainingSec * 1000);
+      if (etaTimeEl) etaTimeEl.textContent = eta.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (etaRemainEl) etaRemainEl.textContent = formatSeconds(remainingSec) + ' · ' + formatMeters(remainingM);
+    }
+
+    // ----- Sim + Live entry points -----
+    function updateTbtForSim(currentIndex) {
+      if (currentStepIndex.length === 0) return;
+      renderTbt(currentIndex);
+    }
+    function updateTbtForLive(gLatLng) {
+      if (currentStepIndex.length === 0 || !currentRouteMeta) return;
+      const idx = window.AlertRouteFilter
+        ? window.AlertRouteFilter.findDriverIndex(currentRouteMeta.path, gLatLng)
+        : -1;
+      renderTbt(idx);
+    }
+
+    // ----- Mount/unmount when Start/Stop Driving -----
+    function tbtMount() {
+      const tbt = document.getElementById('directions-tbt');
+      const ro  = document.getElementById('route-options');
+      if (!tbt || !ro) return;
+      if (currentStepIndex.length === 0) {
+        // Loud failure — caller (startNavigation/startSimulation) shouldn't
+        // arrive here without a route, but if they do, surface it.
+        showToast('⚠️ Pick a route first — no directions to show', true, 5000);
+        return;
+      }
+      currentStepCursor = 0;
+      tbtSpokenKeys.clear();
+      tbtClearOffRouteState();
+      setPanelVisible(ro, false);
+      setPanelVisible(tbt, true);
+    }
+    function tbtUnmount() {
+      const tbt = document.getElementById('directions-tbt');
+      const ro  = document.getElementById('route-options');
+      if (typeof speechSynthesis !== 'undefined') {
+        try { speechSynthesis.cancel(); } catch (_) {}
+      }
+      tbtClearOffRouteState();
+      if (tbt) setPanelVisible(tbt, false);
+      if (ro) {
+        // CRITICAL FIX (review #1): tbtMount set .hidden (display:none !important)
+        // on #route-options. updateRouteOptionsPanel only manages .visible — it
+        // will not clear .hidden, so the panel stays invisible without this line.
+        // We always remove .hidden here; updateRouteOptionsPanel then decides
+        // whether to add .visible based on alternativeRoutes.length.
+        setPanelVisible(ro, true);
+        updateRouteOptionsPanel();
+      }
+    }
+    // Wire voice + recalc buttons (idempotent — safe if buttons not yet in DOM).
+    function tbtWireControls() {
+      const v = document.getElementById('btn-tbt-voice');
+      if (v && !v._wired) {
+        v._wired = true;
+        tbtSetVoice(tbtVoiceEnabled);  // paint initial state
+        v.addEventListener('click', () => tbtSetVoice(!tbtVoiceEnabled));
+      }
+      const r = document.getElementById('btn-tbt-recalc');
+      if (r && !r._wired) {
+        r._wired = true;
+        r.addEventListener('click', () => tbtTriggerRecalc());
       }
     }
 
@@ -2412,6 +3223,11 @@
       opts = opts || {};
       lastAlertStats.received++;
 
+      // SAFETY: yield TBT voice for 20s so the siren / shelter guidance is
+      // not talked over by "In 500 meters, turn left". The driver needs
+      // their full attention on the alert when one fires.
+      if (typeof tbtYieldVoiceForAlert === 'function') tbtYieldVoiceForAlert(20000);
+
       // Dedup by id (real-feed alerts carry an id; mock/manual typically don't)
       const now = Date.now();
       evictExpiredAlertIds(now);
@@ -2733,6 +3549,10 @@
       alternativeRoutes = [];
       selectedRouteIndex = 0;
       currentRouteMeta = null;
+      currentStepIndex = [];
+      currentStepCursor = 0;
+      tbtSpokenKeys.clear();
+      tbtClearOffRouteState();
 
       // Collapse the route-options card + route-info card
       const panel = document.getElementById('route-options');
@@ -3058,6 +3878,10 @@
       btn.textContent = 'Stop Simulation';
       btn.classList.add('running');
 
+      // Mount the turn-by-turn directions panel (swaps in for #route-options).
+      tbtWireControls();
+      tbtMount();
+
       // Start animation loop
       simInterval = setInterval(simStep, 50);
     }
@@ -3068,6 +3892,9 @@
         clearInterval(simInterval);
         simInterval = null;
       }
+
+      // Unmount TBT — restore the planning view (Route Options).
+      tbtUnmount();
 
       const btn = document.getElementById('btn-start');
       btn.textContent = 'Start Simulation';
@@ -3139,6 +3966,11 @@
         lastDangerCheckAt = nowMs;
         checkDangerZone(pos);
       }
+
+      // TBT (turn-by-turn) tick — pass currentIndex directly; sim already
+      // walks the flat routePath, so no findDriverIndex needed. Renderer
+      // is a no-op when the panel is hidden.
+      updateTbtForSim(currentIndex);
 
       // Update route info remaining
       updateRouteInfoRemaining(progress);
@@ -3282,6 +4114,11 @@
 
           // Check danger zone against real position
           checkDangerZone(gLatLng);
+
+          // TBT (turn-by-turn) tick — projects driver onto the route via
+          // findDriverIndex (returns -1 if > 500 m off-route, which feeds
+          // into the off-route countdown / auto-recalc state machine).
+          updateTbtForLive(gLatLng);
         },
         (err) => {
           showToast(`GPS error: ${err.message}`, true);
@@ -3538,6 +4375,7 @@
 
       // Stop anything running from the old mode
       if (isRunning) stopSimulation();
+      if (isDriving) stopNavigation();
       if (gpsWatchId !== null) stopRealGPS();
       if (realAlertTimer) stopRealAlertPolling();
       // Traffic stays on for both modes (UX-004 — no toggle).
@@ -3559,21 +4397,49 @@
       }
     }
 
+    // Entering Live mode no longer auto-starts GPS + polling. The user
+    // must sign in (auth gate) and then explicitly press "Start Driving"
+    // to opt in — same mental model as Sim mode's "Start Simulation".
+    // Traffic layer stays on (UX-004). Status chips are hidden until the
+    // driving state is active.
     function enterLiveMode() {
-      // Preserve feedState if a prior Live session left it 'on' — otherwise amber.
-      renderLiveStatus({ gps: 'starting', real: 'starting', feed: feedState === 'on' ? 'on' : 'starting', traffic: 'on' });
-
-      // 1. Auto-enable live traffic
       if (trafficLayer) trafficLayer.setMap(map);
+      updateAuthPanel();  // paint gate vs signed-in-idle
+    }
 
-      // 2. Auto-enable real GPS tracking
+    // Driving state: real GPS + real Pikud HaOref polling. Caller guarantees
+    // the user is signed in (the Start Driving button is inside the
+    // signed-in-only view).
+    let isDriving = false;
+    function startNavigation() {
+      if (isDriving) return;
+      if (!window.firebase || !window.firebase.auth.currentUser) {
+        showToast('⚠️ Sign in to start driving', true, 4000);
+        return;
+      }
+      isDriving = true;
+      document.getElementById('live-idle').hidden = true;
+      document.getElementById('live-driving').hidden = false;
+
+      renderLiveStatus({ gps: 'starting', real: 'starting', feed: feedState === 'on' ? 'on' : 'starting', traffic: 'on' });
       startRealGPS();
-
-      // 3. Auto-enable real Pikud HaOref API polling
       startRealAlertPolling();
-
-      // Render the final status after starting (GPS status depends on permission grant)
+      // Mount turn-by-turn directions (swap Route Options for Directions).
+      tbtWireControls();
+      tbtMount();
+      // Refresh chips once GPS resolves (permission grant takes a beat).
       setTimeout(refreshLiveStatus, 1500);
+    }
+
+    function stopNavigation() {
+      if (!isDriving) return;
+      isDriving = false;
+      if (gpsWatchId !== null) stopRealGPS();
+      if (realAlertTimer) stopRealAlertPolling();
+      tbtUnmount();
+      document.getElementById('live-driving').hidden = true;
+      document.getElementById('live-idle').hidden = false;
+      showToast('Navigation stopped');
     }
 
     function renderLiveStatus(s) {
@@ -3761,6 +4627,44 @@
       const btnAlertLive = document.getElementById('btn-alert-live');
       if (btnAlertLive) btnAlertLive.addEventListener('click', () => triggerFromDropdown('alert-select-live'));
 
+      // Google Sign-In (Live tab). Distinct from the share button's
+      // sign-in-and-share shortcut: this one is the explicit "who am I"
+      // affordance, independent of whether the user is ready to share yet.
+      const signInBtn = document.getElementById('btn-signin');
+      if (signInBtn) {
+        signInBtn.addEventListener('click', () => {
+          if (signInBtn.disabled) return;  // already signed in
+          signInWithGoogle();
+        });
+      }
+      const signOutBtn = document.getElementById('btn-signout');
+      if (signOutBtn) {
+        signOutBtn.addEventListener('click', async () => {
+          // Tear down any active session before releasing the auth token.
+          // Order matters: stop sharing (needs valid token to write endedAt)
+          // then stop navigation (local GPS + feed poll, no auth needed).
+          if (shareSessionId) await stopSharing();
+          if (isDriving) stopNavigation();
+          await signOutCurrent();
+        });
+      }
+
+      // Start / Stop Driving (Live tab, after sign-in). These own the
+      // GPS + real-alert-polling lifecycle that used to auto-run on tab
+      // switch. Making it an explicit user action avoids burning battery /
+      // quota on someone who only opened the tab to glance.
+      const startDrivingBtn = document.getElementById('btn-start-driving');
+      if (startDrivingBtn) {
+        startDrivingBtn.addEventListener('click', () => startNavigation());
+      }
+      const stopDrivingBtn = document.getElementById('btn-stop-driving');
+      if (stopDrivingBtn) {
+        stopDrivingBtn.addEventListener('click', () => stopNavigation());
+      }
+      // Paint the auth panel once on load (auth-state listener will keep it
+      // current on every sign-in/out afterwards).
+      updateAuthPanel();
+
       // Share live location
       document.getElementById('btn-share').addEventListener('click', () => {
         if (shareSessionId) {
@@ -3803,7 +4707,7 @@
        https://goo.gle/js-api-loading) — the legacy `async` HTML attribute
        alone triggers a console warning. -->
   <script async
-    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAn00DOQBkWkqQDsRppsHfLgO0oXfv6GDI&loading=async&libraries=geometry,places,marker,routes&callback=onGoogleMapsLoaded">
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB-SaMrmFoDJgOPbJMKIg7aZujHAEIBT68&loading=async&libraries=geometry,places,marker,routes&callback=onGoogleMapsLoaded">
   </script>
 </body>
 </html>
