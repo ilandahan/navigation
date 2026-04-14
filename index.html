@@ -1,0 +1,3809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pikud HaOref Route Alert POC</title>
+  <link rel="preconnect" href="https://maps.googleapis.com">
+  <link rel="preconnect" href="https://maps.gstatic.com" crossorigin>
+  <style>
+    /* ============ Design tokens ============ */
+    /* Single source of truth for radius/shadow/spacing/colors. Every panel
+       below should use these variables instead of raw values so the look
+       stays cohesive when we tweak it. Matches Google Maps' directions
+       panel rhythm: 12px radius, soft elevation shadow, 12px section gap. */
+    :root {
+      --panel-radius: 12px;
+      --panel-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      --modal-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      --section-gap: 12px;
+      --button-radius: 8px;
+
+      --color-primary: #1a73e8;
+      --color-primary-hover: #1765cc;
+      --color-primary-tint: #e8f0fe;
+      --color-text: #202124;
+      --color-text-muted: #5f6368;
+      --color-text-subtle: #9aa0a6;
+      --color-border: #e8eaed;
+      --color-surface: #ffffff;
+      --color-surface-muted: #f8f9fa;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Roboto, 'Google Sans', 'Segoe UI', system-ui, Arial, sans-serif;
+      color: var(--color-text);
+    }
+
+    #map { width: 100vw; height: 100vh; }
+
+    /* Feed-status banner — persistent health indicator. Visible in both
+       Simulation and Live modes. Colour codes: green OK / amber warning /
+       red error. Top of the map viewport, doesn't overlap the sidebar. */
+    #feed-status-banner {
+      position: fixed;
+      top: 0;
+      left: 380px;
+      right: 0;
+      padding: 6px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      text-align: center;
+      z-index: 11;
+      color: #fff;
+      transition: background 0.25s, opacity 0.2s;
+      line-height: 1.3;
+      letter-spacing: 0.2px;
+    }
+    #feed-status-banner.hidden { display: none; }
+    #feed-status-banner.ok    { background: #137333; }   /* green */
+    #feed-status-banner.warn  { background: #e37400; }   /* amber */
+    #feed-status-banner.error { background: #c5221f; }   /* red */
+
+    /* Top bar with danger indicator + alert banner — centered OVER THE MAP
+       (ignoring the 380px left sidebar so the banner remains eye-level) */
+    #top-bar {
+      position: fixed;
+      top: 0;
+      left: calc(380px + (100vw - 380px) / 2);
+      transform: translateX(-50%);
+      z-index: 10;
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      border-radius: 0 0 12px 12px;
+      overflow: hidden;
+      box-shadow: var(--panel-shadow);
+      min-width: 200px;
+    }
+
+    #danger-indicator {
+      padding: 14px 24px;
+      font-size: 18px;
+      font-weight: 800;
+      text-align: center;
+      white-space: nowrap;
+      letter-spacing: 1px;
+      transition: background 0.3s, color 0.3s;
+    }
+    #danger-indicator.safe {
+      background: #2e7d32;
+      color: white;
+    }
+    #danger-indicator.danger {
+      background: #ff1744;
+      color: white;
+      animation: pulse-danger 0.5s ease-in-out infinite alternate;
+    }
+    @keyframes pulse-danger {
+      from { background: #ff1744; }
+      to   { background: #d50000; }
+    }
+
+    #alert-banner {
+      display: none;
+      background: #d32f2f;
+      color: white;
+      padding: 14px 32px;
+      font-size: 18px;
+      font-weight: 600;
+      text-align: center;
+      min-width: 280px;
+    }
+    #alert-banner.visible {
+      display: block;
+    }
+    #alert-banner.inside {
+      animation: pulse-banner 0.6s ease-in-out infinite alternate;
+    }
+    @keyframes pulse-banner {
+      from { background: #d32f2f; }
+      to   { background: #b71c1c; }
+    }
+    #alert-banner .countdown {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 4px;
+      direction: ltr;
+    }
+
+    /* Danger glow on map */
+    #map.danger-glow {
+      box-shadow: inset 0 0 60px rgba(255, 0, 0, 0.35);
+    }
+
+    /* Control panel — Google-Maps-style LEFT sidebar. Scrolls vertically
+       when content is taller than the viewport. The legacy `.pac-container`
+       dropdown is appended to document.body (not a child of #controls), so
+       scrolling here does not clip it. */
+    #controls {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: 380px;
+      background: var(--color-surface);
+      border-radius: 0;
+      padding: 18px 20px 24px;
+      z-index: 10;
+      box-shadow: 2px 0 8px rgba(0, 0, 0, 0.12);
+      font-size: 14px;
+      overflow-y: auto;
+      overflow-x: visible;
+      scrollbar-gutter: stable;
+    }
+    /* Thin, muted scrollbar so it doesn't scream for attention */
+    #controls::-webkit-scrollbar { width: 8px; }
+    #controls::-webkit-scrollbar-thumb {
+      background: #dadce0;
+      border-radius: 4px;
+    }
+    #controls::-webkit-scrollbar-thumb:hover { background: #bdc1c6; }
+    #map { margin-left: 380px; width: calc(100vw - 380px); }
+    #controls h3 {
+      margin-bottom: var(--section-gap);
+      font-size: 22px;
+      font-weight: 500;
+      color: var(--color-text);
+      letter-spacing: -0.2px;
+      padding-bottom: 8px;
+    }
+    .ctrl-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .ctrl-row.spaced-above { margin-top: 10px; }
+    .ctrl-row label {
+      min-width: 55px;
+      color: #555;
+      font-size: 13px;
+    }
+    button {
+      padding: 9px 16px;
+      border: none;
+      border-radius: var(--button-radius);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: background 0.2s, box-shadow 0.15s, color 0.15s;
+    }
+    /* Accessibility: visible focus ring on every interactive element */
+    button:focus-visible,
+    .tm-btn:focus-visible,
+    input:focus-visible,
+    a:focus-visible,
+    select:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: 2px;
+    }
+    #btn-start {
+      background: #1976d2;
+      color: white;
+      width: 100%;
+      margin-top: 16px;               /* breathing room under the demo button */
+    }
+    #btn-start:hover { background: #1565c0; }
+    #btn-start:disabled { background: #90caf9; cursor: not-allowed; }
+    #btn-start.running { background: #c62828; }
+    #btn-start.running:hover { background: #b71c1c; }
+
+    #btn-alert {
+      background: #ff5722;
+      color: white;
+      flex: 1;
+    }
+    #btn-alert:hover { background: #e64a19; }
+
+    select, input[type=range] {
+      flex: 1;
+      padding: 4px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .speed-val {
+      min-width: 28px;
+      text-align: center;
+      font-weight: 600;
+      color: #1976d2;
+    }
+
+    /* Status bar — inset to the right of the 380px sidebar so it doesn't
+       mask the share/offline buttons at the sidebar's bottom. */
+    #status {
+      position: fixed;
+      bottom: 0; left: 380px; right: 0;
+      background: rgba(255,255,255,0.95);
+      padding: 10px 20px;
+      display: flex;
+      gap: 24px;
+      font-size: 13px;
+      color: #333;
+      z-index: 10;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.1);
+      align-items: center;
+    }
+    #status .label { color: #888; margin-right: 4px; }
+    #status .danger-status {
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 4px;
+    }
+    #status .danger-status.safe { background: #e8f5e9; color: #2e7d32; }
+    #status .danger-status.danger { background: #ffebee; color: #c62828; }
+    #progress-bar {
+      flex: 1;
+      height: 6px;
+      background: #e0e0e0;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%;
+      background: #1976d2;
+      width: 0%;
+      transition: width 0.1s;
+    }
+
+    /* Mode toggle */
+    .mode-toggle {
+      display: flex;
+      gap: 0;
+      background: var(--color-surface-muted);
+      border-radius: var(--button-radius);
+      padding: 3px;
+      margin-bottom: var(--section-gap);
+    }
+    .mode-btn {
+      flex: 1;
+      background: transparent;
+      color: var(--color-text-muted);
+      padding: 8px 6px;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 6px;
+      transition: all 0.2s;
+    }
+    .mode-btn:hover { color: var(--color-text); }
+    .mode-btn.active {
+      background: var(--color-surface);
+      color: var(--color-primary);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    }
+    .mode-section {
+      padding-bottom: var(--section-gap);
+      margin-bottom: var(--section-gap);
+      border-bottom: 1px solid var(--color-border);
+    }
+    .mode-desc {
+      font-size: 12px;
+      color: #666;
+      line-height: 1.5;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      background: #f8f9fa;
+      border-radius: 6px;
+    }
+    #btn-demo-route {
+      background: transparent;
+      color: var(--color-primary);
+      width: 100%;
+      padding: 8px;
+      font-size: 12px;
+      border: 1px dashed #bbdefb;
+    }
+    #btn-demo-route:hover { background: var(--color-primary-tint); }
+
+    /* Live mode auto-status indicator — compact tags */
+    .live-status-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .live-status-list .lsl-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--color-text);
+      background: var(--color-surface-muted);
+      border-radius: 999px;
+      line-height: 1.2;
+    }
+    .live-status-list .lsl-item::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #2e7d32;           /* on = green */
+      flex-shrink: 0;
+    }
+    .live-status-list .lsl-item.starting::before { background: #e37400; }  /* amber */
+    .live-status-list .lsl-item.off::before      { background: #c62828; }  /* red */
+
+    /* ============ Google-Maps-style From/To inputs ============ */
+    /* The .route-inputs block stacks the From/To rows, the primary actions
+       (Directions + Send to Phone), the travel-mode tabs and the demo-route
+       button. A consistent 12px gap separates every section so nothing is
+       pressed against another component. */
+    .route-inputs {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: var(--section-gap);
+    }
+    .ri-stack {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 44px;                /* room for the swap button */
+    }
+    /* Dashed connector spans the vertical gap between the two marker icons */
+    .ri-stack::before {
+      content: "";
+      position: absolute;
+      left: 9px;                          /* centered on 20px circle/pin */
+      top: 26px;
+      height: calc(100% - 50px);
+      border-left: 2px dotted var(--color-text-subtle);
+      z-index: 0;
+    }
+    .ri-field {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 0;
+      position: relative;
+    }
+    /* Stack FROM above TO so FROM's autocomplete popover can cover TO when
+       active, matching the Google Maps directions-panel behavior. */
+    .ri-field.ri-from { z-index: 2; }
+    .ri-field.ri-to   { z-index: 1; }
+    .ri-field .ri-icon {
+      flex: 0 0 20px;
+      width: 20px; height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1;                         /* above the connector */
+      background: var(--color-surface);   /* mask the connector line */
+    }
+    /* Origin dot + destination pin — 15% smaller than initial spec so they
+       sit visually lighter against the 14px input text. */
+    .ri-field.ri-from .ri-icon::before {
+      content: "";
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--color-primary);
+      border: 2px solid var(--color-surface);
+      box-shadow: 0 0 0 2px var(--color-primary);
+    }
+    .ri-field.ri-to .ri-icon {
+      color: #d93025;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .ri-field.ri-to .ri-icon::before {
+      content: "📍";
+      font-size: 15px;
+      line-height: 1;
+    }
+    .ri-field label {
+      position: absolute; left: -99999px;  /* visually hidden, preserve a11y */
+    }
+    .ri-field input,
+    .ri-field .gmp-autocomplete {
+      flex: 1;
+      padding: 0;
+      border: 1px solid var(--color-border);
+      border-radius: var(--button-radius);
+      font-size: 14px;
+      font-family: inherit;
+      color: var(--color-text);             /* typed text is black */
+      background: var(--color-surface);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    /* Placeholder stays muted; explicit rule overrides any UA default. */
+    .ri-field input::placeholder {
+      color: var(--color-text-subtle);
+      opacity: 1;
+    }
+    .ri-field input:hover {
+      border-color: #bdc1c6;
+    }
+    /* Swap button aligned to the right of the two inputs.
+       Positioned against .ri-stack so it centers between From and To only,
+       regardless of what else appears in the sidebar below. Hidden until
+       both origin and destination have been picked (see updateDirectionsGate). */
+    #btn-swap-route {
+      position: absolute;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 36px; height: 36px;
+      display: flex;
+      align-items: center; justify-content: center;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 50%;
+      color: var(--color-text-muted);
+      font-size: 18px;
+      line-height: 1;
+      padding: 0;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, transform 0.3s;
+    }
+    #btn-swap-route:hover {
+      background: var(--color-primary-tint);
+      color: var(--color-primary);
+    }
+    /* Rotate quarter-turn on hover to hint at the action */
+    #btn-swap-route:hover { transform: translateY(-50%) rotate(180deg); }
+    /* Keyboard users get the standard outline (see :focus-visible above);
+       mouse users get the subtler border-color cue without an outline. */
+    .ri-field input:focus:not(:focus-visible) {
+      outline: none;
+      border-color: var(--color-primary);
+    }
+    /* Style the new PlaceAutocompleteElement web component */
+    gmp-place-autocomplete {
+      flex: 1;
+      --gmp-place-autocomplete-input-padding: 0;
+      --gmp-place-autocomplete-input-border: 1px solid #ddd;
+      --gmp-place-autocomplete-input-border-radius: 4px;
+      --gmp-place-autocomplete-input-font-size: 14px;
+    }
+    /* Autocomplete dropdown needs to render above the map canvas (which has
+       its own internal z-index stack). Bump well above Maps layers. */
+    .pac-container {
+      z-index: 10000 !important;
+    }
+    /* Stacking note: giving the autocomplete elements themselves a high
+       z-index is wrong — both FROM and TO fields would then share the top
+       stacking rank and DOM order would put TO on top, hiding FROM's
+       suggestion popover. Instead, rank the two rows so FROM > TO; the
+       popover from FROM then naturally lands above TO. */
+
+    /* Share link dialog (shows receiver URL so user can always reopen) */
+    #share-link-panel {
+      display: none;
+      position: fixed;
+      bottom: 16px; right: 16px;
+      background: var(--color-surface);
+      border-radius: var(--panel-radius);
+      padding: 14px 16px;
+      z-index: 12;
+      box-shadow: var(--panel-shadow);
+      width: 360px;
+      font-size: 13px;
+      border-left: 5px solid #00897b;
+    }
+    #share-link-panel.visible { display: block; }
+    #share-link-panel .slp-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    #share-link-panel .slp-title {
+      font-weight: 700;
+      color: #00695c;
+      font-size: 14px;
+    }
+    #share-link-panel .slp-session {
+      font-size: 11px;
+      color: #888;
+    }
+    #share-link-panel .slp-session code {
+      background: #eee;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+    }
+    #share-link-panel .slp-url-row {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+    #share-link-panel .slp-url-row input {
+      flex: 1;
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    #share-link-panel .slp-url-row button {
+      padding: 6px 12px;
+      font-size: 12px;
+      background: #00897b;
+      color: white;
+    }
+    #share-link-panel .slp-url-row button:hover { background: #00695c; }
+    #share-link-panel .slp-hint {
+      font-size: 11px;
+      color: #888;
+      line-height: 1.4;
+    }
+
+    /* Share row — bottom of controls, separated by divider */
+    .share-row {
+      margin-top: 16px;
+      padding-top: var(--section-gap);
+      border-top: 1px solid var(--color-border);
+    }
+    .share-row #btn-share { width: 100%; }
+    .share-row #btn-offline { width: 100%; margin-top: 8px; }
+
+    /* Travel mode tabs (Google-Maps style). Hidden until both fields filled;
+       explicit `[hidden]` override because `display: flex` has higher
+       specificity than the UA `[hidden] { display: none }` rule. */
+    .travel-mode-tabs {
+      display: flex;
+      gap: 4px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--color-border);
+    }
+    .travel-mode-tabs[hidden] { display: none; }
+    .tm-btn {
+      flex: 1;
+      padding: 10px 4px 8px;
+      background: var(--color-surface);
+      border: none;
+      border-bottom: 3px solid transparent;
+      border-radius: var(--button-radius) var(--button-radius) 0 0;
+      cursor: pointer;
+      font-size: 20px;
+      color: var(--color-text-subtle);
+      transition: color .15s, border-color .15s, background .15s;
+      margin-bottom: -10px;        /* overlap tabs-container padding-bottom + border */
+    }
+    .tm-btn:hover { background: var(--color-surface-muted); color: var(--color-text-muted); }
+    .tm-btn.active {
+      color: var(--color-primary);
+      border-bottom-color: var(--color-primary);
+      background: var(--color-primary-tint);
+      font-weight: 700;
+    }
+    .tm-btn.active .tm-lbl { color: var(--color-primary); }
+    .tm-btn .tm-lbl {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .4px;
+      margin-top: 2px;
+      text-transform: uppercase;
+      color: var(--color-text-subtle);
+    }
+
+    /* Minimalist text-only Clear button — sits between the From/To stack
+       and the primary-actions row. Underlined, aligned right. */
+    .btn-clear {
+      align-self: flex-end;
+      background: none;
+      border: none;
+      color: var(--color-text-muted);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      cursor: pointer;
+      padding: 4px 2px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    .btn-clear:hover { color: var(--color-primary); }
+
+    /* Primary directions actions (Directions + Send to Phone) share a row.
+       Rendered ABOVE the travel-mode tabs (per UX-006) and hidden until both
+       From and To are filled. Explicit `[hidden]` override because the
+       class sets display:flex. */
+    .primary-actions {
+      display: flex;
+      flex-direction: row;
+      gap: 8px;
+    }
+    .primary-actions[hidden] { display: none; }
+    .primary-actions > button {
+      flex: 1;
+      padding: 7px 10px;
+      font-size: 13px;
+      min-width: 0;
+    }
+
+    /* Primary directions action (flex-sized by .primary-actions > button) */
+    #btn-recalc {
+      background: var(--color-primary);
+      color: #fff;
+    }
+    #btn-recalc:hover { background: var(--color-primary-hover); }
+    #btn-recalc:disabled {
+      background: var(--color-surface-muted);
+      color: var(--color-text-subtle);
+      cursor: not-allowed;
+    }
+    #btn-send-phone {
+      background: var(--color-surface);
+      color: var(--color-primary);
+      border: 1px solid var(--color-primary);
+    }
+    #btn-send-phone:hover { background: var(--color-primary-tint); }
+    #btn-send-phone:disabled {
+      background: var(--color-surface-muted);
+      color: var(--color-text-subtle);
+      border-color: var(--color-border);
+      cursor: not-allowed;
+    }
+
+    .share-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .share-overlay.visible { display: flex; }
+    .share-modal {
+      background: var(--color-surface);
+      border-radius: var(--panel-radius);
+      padding: 24px;
+      width: 360px;
+      max-width: calc(100vw - 32px);
+      box-shadow: var(--modal-shadow);
+      font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+    }
+    .share-modal h3 {
+      margin: 0 0 4px; font-size: 18px; color: #202124;
+    }
+    .share-modal .share-sub {
+      color: #5f6368; font-size: 13px; margin-bottom: 16px;
+    }
+    .share-qr {
+      display: block; margin: 0 auto 16px;
+      width: 220px; height: 220px;
+      background: #f5f5f5;
+      border-radius: 8px;
+    }
+    .share-qr.broken::after {
+      content: "QR service unreachable — use the link below";
+      display: block; padding: 90px 20px; color: #80868b; text-align: center;
+    }
+    .share-url-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .share-url {
+      flex: 1;
+      font-family: monospace; font-size: 11px;
+      padding: 8px 10px;
+      border: 1px solid #dadce0; border-radius: 6px;
+      word-break: break-all;
+      background: #f8f9fa;
+    }
+    .share-copy, .share-close {
+      padding: 8px 14px;
+      background: #f8f9fa; border: 1px solid #dadce0;
+      border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    .share-copy:hover, .share-close:hover { background: #eef1f4; }
+    .share-actions {
+      display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
+    }
+    .share-sms, .share-mail {
+      padding: 8px 14px;
+      background: #1a73e8; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer;
+      font-size: 13px; text-decoration: none;
+      display: inline-block;
+    }
+    .share-sms:hover, .share-mail:hover { background: #1765cc; }
+
+    /* Route-option tile (Google-Maps-like) */
+    .route-opt .ro-via {
+      font-size: 12px; color: #5f6368; margin-top: 2px;
+    }
+
+    #btn-share {
+      background: #00897b;
+      color: white;
+      width: 100%;
+      font-size: 13px;
+    }
+    #btn-share:hover { background: #00695c; }
+    #btn-share.active { background: #d32f2f; }
+    #btn-share.active:hover { background: #b71c1c; }
+    #btn-offline {
+      background: #ff9800;
+      color: white;
+      width: 100%;
+      margin-top: 6px;
+      font-size: 12px;
+    }
+    #btn-offline:hover { background: #f57c00; }
+
+    /* Real alerts toggle */
+    /* Driver marker — HTML content for AdvancedMarkerElement.
+       Replaces the legacy SymbolPath arrow; rotation is a CSS transform
+       so the 20 Hz simulation update is just a style write. */
+    .driver-marker {
+      display: block;
+      width: 28px; height: 28px;
+      color: #4285F4;
+      transform-origin: 50% 50%;
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+      transition: color 0.15s;
+      pointer-events: none;               /* don't block map interactions */
+    }
+    .driver-marker.danger { color: #FF0000; }
+    .driver-marker svg { display: block; width: 100%; height: 100%; }
+
+    /* Loading overlay */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: rgba(255,255,255,0.9);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      font-size: 18px;
+      color: #555;
+    }
+    #loading.hidden { display: none; }
+
+    /* Toast for GPS errors/info */
+    #toast {
+      display: none;
+      position: fixed;
+      bottom: 60px; left: 50%;
+      transform: translateX(-50%);
+      background: #333;
+      color: white;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 13px;
+      z-index: 20;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    }
+    #toast.visible { display: block; }
+    #toast.error { background: #d32f2f; }
+
+    /* Message overlay (start / arrival) */
+    #message-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+      z-index: 50;
+      align-items: center;
+      justify-content: center;
+    }
+    #message-overlay.visible { display: flex; }
+    #message-box {
+      background: white;
+      border-radius: 16px;
+      padding: 40px 48px;
+      text-align: center;
+      max-width: 480px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+    #message-box .msg-icon { font-size: 48px; margin-bottom: 12px; }
+    #message-box .msg-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: #333;
+    }
+    #message-box .msg-body {
+      font-size: 15px;
+      color: #555;
+      line-height: 1.6;
+      margin-bottom: 20px;
+      direction: rtl;
+    }
+    #message-box button {
+      background: #1976d2;
+      color: white;
+      padding: 10px 32px;
+      font-size: 15px;
+      border-radius: 8px;
+    }
+    #message-box button:hover { background: #1565c0; }
+    #message-box.arrived .msg-title { color: #2e7d32; }
+    #message-box.arrived button { background: #2e7d32; }
+    #message-box.arrived button:hover { background: #1b5e20; }
+
+    /* Route options — now inline inside the sidebar, Google-Maps-style cards */
+    #route-options {
+      display: none;
+      margin-top: var(--section-gap);
+      padding-top: var(--section-gap);
+      border-top: 1px solid var(--color-border);
+      font-size: 13px;
+    }
+    #route-options.visible { display: block; }
+    #route-options h4 {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      font-weight: 600;
+    }
+    .route-opt {
+      padding: 12px 14px 12px 16px;
+      border: none;
+      border-left: 4px solid transparent;
+      border-bottom: 1px solid var(--color-border);
+      border-radius: 0;
+      cursor: pointer;
+      transition: background 0.12s;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "duration via"
+        "stats    via";
+      column-gap: 10px;
+      row-gap: 2px;
+    }
+    .route-opt:hover { background: var(--color-surface-muted); }
+    .route-opt.active {
+      border-left-color: var(--color-primary);
+      background: var(--color-primary-tint);
+    }
+    .route-opt.active .ro-name { color: var(--color-primary); }
+    .route-opt.has-danger { border-left-color: #d32f2f; }
+    .ro-name {
+      grid-area: duration;
+      font-weight: 600;
+      font-size: 18px;
+      color: var(--color-text);
+      letter-spacing: -0.2px;
+      line-height: 1.25;
+    }
+    .ro-stats {
+      grid-area: stats;
+      font-size: 13px;
+      color: var(--color-text-muted);
+    }
+    .ro-via {
+      grid-area: via;
+      font-size: 12px;
+      color: var(--color-text-muted);
+      text-align: right;
+      align-self: center;
+      line-height: 1.3;
+      max-width: 140px;
+    }
+    .ro-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      border-radius: 4px;
+      vertical-align: 2px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .ro-badge.danger { background: #fce8e6; color: #c5221f; }
+    .ro-badge.safe   { background: #e6f4ea; color: #137333; }
+    /* Legacy classes still emitted — keep them compatible */
+    .route-danger { display: none; }
+    .route-safe   { display: none; }
+
+    /* Shelter / escape panel — shifted to the right of the sidebar */
+    #shelter-panel {
+      display: none;
+      position: fixed;
+      bottom: 60px; left: 400px;
+      background: var(--color-surface);
+      border-radius: var(--panel-radius);
+      padding: 14px 18px;
+      z-index: 11;
+      box-shadow: var(--panel-shadow);
+      max-width: 320px;
+      font-size: 13px;
+    }
+    #shelter-panel.visible { display: block; }
+    #shelter-panel.escape {
+      border-left: 6px solid #d32f2f;
+      animation: pulse-escape 1s ease-in-out infinite alternate;
+    }
+    @keyframes pulse-escape {
+      from { box-shadow: 0 4px 16px rgba(211,47,47,0.4); }
+      to   { box-shadow: 0 4px 20px rgba(211,47,47,0.8); }
+    }
+    #shelter-panel h4 {
+      font-size: 14px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #shelter-panel .sp-title-shelter { color: #2e7d32; }
+    #shelter-panel .sp-title-escape { color: #d32f2f; }
+    .sp-item {
+      padding: 8px 10px;
+      background: #f5f5f5;
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+    .sp-item .sp-name {
+      font-weight: 700;
+      color: #333;
+      margin-bottom: 2px;
+    }
+    .sp-item .sp-meta {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 6px;
+    }
+    .sp-item button {
+      background: #1976d2;
+      color: white;
+      padding: 6px 12px;
+      font-size: 12px;
+      width: 100%;
+    }
+    .sp-item button:hover { background: #1565c0; }
+    .sp-item.escape button { background: #d32f2f; }
+    .sp-item.escape button:hover { background: #b71c1c; }
+
+    /* Route info card — moved right of sidebar */
+    #route-info {
+      display: none;
+      position: fixed;
+      top: 12px; left: 400px;
+      background: var(--color-surface);
+      border-radius: var(--panel-radius);
+      padding: 14px 18px;
+      z-index: 10;
+      box-shadow: var(--panel-shadow);
+      min-width: 200px;
+      font-size: 13px;
+    }
+    #route-info.visible { display: block; }
+    #route-info h4 {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 6px;
+    }
+    #route-info .ri-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      gap: 16px;
+    }
+    /* UA [hidden] rule has lower specificity than `#route-info .ri-row` so
+       the `hidden` HTML attribute would otherwise be ignored on .ri-row
+       children. Explicit override keeps `.hidden = true` toggles working. */
+    #route-info .ri-row[hidden] { display: none; }
+    #route-info .ri-label {
+      color: #888;
+      font-size: 12px;
+    }
+    #route-info .ri-value {
+      font-weight: 700;
+      color: #333;
+      font-size: 14px;
+    }
+    #route-info .ri-value.remaining { color: #1976d2; }
+    #route-info .ri-value.eta { color: #2e7d32; }
+
+    /* Pikud HaOref driver instructions panel — right of sidebar */
+    #instructions-panel {
+      display: none;
+      position: fixed;
+      top: 220px; left: 400px;
+      background: var(--color-surface);
+      border-radius: var(--panel-radius);
+      padding: 16px 18px;
+      z-index: 10;
+      box-shadow: var(--panel-shadow);
+      max-width: 280px;
+      font-size: 13px;
+      border-left: 5px solid #d32f2f;
+    }
+    #instructions-panel.visible { display: block; }
+    #instructions-panel h4 {
+      font-size: 15px;
+      color: #d32f2f;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #instructions-panel ul {
+      list-style: none;
+      padding: 0;
+    }
+    #instructions-panel li {
+      padding: 6px 0;
+      border-bottom: 1px solid #f0f0f0;
+      line-height: 1.5;
+      color: #333;
+    }
+    #instructions-panel li:last-child { border-bottom: none; }
+    #instructions-panel .instruction-num {
+      display: inline-block;
+      width: 22px;
+      height: 22px;
+      background: #d32f2f;
+      color: white;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 22px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading">Loading map and alert zone data...</div>
+  <div id="toast"></div>
+
+  <!-- Always-visible feed-status banner (SAFETY-NO-FALLBACKS-001). Never
+       hidden silently — a broken alert feed MUST be visible to the driver. -->
+  <div id="feed-status-banner" class="hidden ok" role="status" aria-live="polite"></div>
+
+  <!-- Message overlay (start / arrival) -->
+  <div id="message-overlay">
+    <div id="message-box">
+      <div class="msg-icon" id="msg-icon"></div>
+      <div class="msg-title" id="msg-title"></div>
+      <div class="msg-body" id="msg-body"></div>
+      <button id="msg-btn"></button>
+    </div>
+  </div>
+
+  <!-- Pikud HaOref driver instructions (shown during danger) -->
+  <div id="instructions-panel">
+    <h4>⚠️ Pikud HaOref — Driver Instructions</h4>
+    <ul>
+      <li><span class="instruction-num">1</span> Pull over to the side of the road</li>
+      <li><span class="instruction-num">2</span> Exit the vehicle</li>
+      <li><span class="instruction-num">3</span> Lie on the ground and protect your head with your hands</li>
+      <li><span class="instruction-num">4</span> Move at least 100 meters away from the vehicle if possible</li>
+      <li><span class="instruction-num">5</span> If you cannot stop — duck below the window line</li>
+      <li><span class="instruction-num">6</span> Wait 10 minutes before resuming driving</li>
+    </ul>
+  </div>
+
+  <!-- Share link dialog (persistent link for receiver) -->
+  <div id="share-link-panel"></div>
+
+
+  <!-- Send-to-phone modal -->
+  <div id="share-overlay" class="share-overlay" role="dialog" aria-modal="true" aria-labelledby="share-title">
+    <div class="share-modal">
+      <h3 id="share-title">Send directions to your phone</h3>
+      <div class="share-sub">Scan the QR code with your phone's camera, or copy the link.</div>
+      <img class="share-qr" id="share-qr" alt="QR code for directions link">
+      <div class="share-url-row">
+        <div class="share-url" id="share-url-text"></div>
+        <button class="share-copy" id="share-copy-btn" type="button">Copy</button>
+      </div>
+      <div class="share-actions">
+        <a class="share-sms"  id="share-sms-link"  href="#">SMS</a>
+        <a class="share-mail" id="share-mail-link" href="#">Email</a>
+        <button class="share-close" id="share-close-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shelter / escape panel -->
+  <div id="shelter-panel"></div>
+
+  <!-- Route info card (distance, duration, ETA) -->
+  <div id="route-info">
+    <h4>Route Info</h4>
+    <div class="ri-row">
+      <span class="ri-label">Distance</span>
+      <span class="ri-value" id="ri-distance">—</span>
+    </div>
+    <div class="ri-row">
+      <span class="ri-label">Duration</span>
+      <span class="ri-value" id="ri-duration">—</span>
+    </div>
+    <div class="ri-row">
+      <span class="ri-label">ETA</span>
+      <span class="ri-value eta" id="ri-eta">—</span>
+    </div>
+    <div class="ri-row" id="ri-remaining-row" hidden>
+      <span class="ri-label">Remaining</span>
+      <span class="ri-value remaining" id="ri-remaining">—</span>
+    </div>
+  </div>
+
+  <div id="top-bar">
+    <div id="danger-indicator" class="safe">✓ SAFE</div>
+    <div id="alert-banner">
+      <div id="alert-text"></div>
+      <div class="countdown" id="alert-countdown"></div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <h3>Pikud HaOref Alert POC</h3>
+
+    <!-- Mode toggle -->
+    <div class="mode-toggle">
+      <button class="mode-btn active" data-mode="simulation">🎮 Simulation</button>
+      <button class="mode-btn" data-mode="live">🛰️ Live</button>
+    </div>
+
+    <!-- Shared directions panel — visible in both Simulation and Live modes.
+         Search + routing UI (From/To, swap, Directions, Send-to-Phone,
+         travel-mode tabs, demo route, route alternatives). -->
+    <div id="directions-panel" class="mode-section">
+      <div class="route-inputs">
+        <div class="ri-stack">
+          <div class="ri-field ri-from">
+            <span class="ri-icon" aria-hidden="true"></span>
+            <label for="input-from">From</label>
+            <input type="text" id="input-from" placeholder="Choose starting point"
+                   autocomplete="off">
+          </div>
+          <div class="ri-field ri-to">
+            <span class="ri-icon" aria-hidden="true"></span>
+            <label for="input-to">To</label>
+            <input type="text" id="input-to" placeholder="Choose destination"
+                   autocomplete="off">
+          </div>
+          <button id="btn-swap-route" type="button" hidden
+                  title="Swap origin and destination"
+                  aria-label="Swap origin and destination">⇅</button>
+        </div>
+        <!-- Clear (text-underline) — visible once any field has a selection -->
+        <button id="btn-clear-route" type="button" class="btn-clear" hidden>Clear</button>
+        <!-- Primary actions (above tabs per UX-006) — hidden until both From + To filled -->
+        <div class="primary-actions" hidden>
+          <button id="btn-recalc">Directions</button>
+          <button id="btn-send-phone">📱 Send</button>
+        </div>
+        <!-- Travel-mode tabs — hidden until user clicks Directions (UX-008) -->
+        <div class="travel-mode-tabs" id="travel-mode-tabs" hidden>
+          <button class="tm-btn active" data-mode="driving"   title="Driving">🚗<span class="tm-lbl">Car</span></button>
+          <button class="tm-btn"        data-mode="transit"   title="Public transit">🚆<span class="tm-lbl">Transit</span></button>
+          <button class="tm-btn"        data-mode="walking"   title="Walking">🚶<span class="tm-lbl">Walk</span></button>
+          <button class="tm-btn"        data-mode="bicycling" title="Bicycling">🚲<span class="tm-lbl">Bike</span></button>
+        </div>
+        <!-- Demo-route button — auto-hides when both fields are filled -->
+        <button id="btn-demo-route">Use Demo Route (Rishon → Kiryat Ata)</button>
+      </div>
+      <!-- Route alternatives render here inline (Google-Maps style) -->
+      <div id="route-options"></div>
+    </div>
+
+    <!-- Simulation-specific controls (Start + speed + manual alert) -->
+    <div id="sim-controls" class="mode-section">
+      <button id="btn-start" disabled>Start Simulation</button>
+      <div class="ctrl-row spaced-above">
+        <label>Speed:</label>
+        <input type="range" id="speed-slider" min="1" max="10" value="2">
+        <span class="speed-val" id="speed-val">2x</span>
+      </div>
+      <div class="ctrl-row">
+        <label>Alert:</label>
+        <select id="alert-select"></select>
+      </div>
+      <div class="ctrl-row">
+        <button id="btn-alert" disabled>Trigger Alert</button>
+      </div>
+    </div>
+
+    <!-- Live mode: real GPS + real Pikud HaOref API (all auto-enabled) -->
+    <div id="live-controls" class="mode-section" hidden>
+      <div id="live-status" class="live-status-list"></div>
+    </div>
+
+    <!-- Shared: share live location (both modes) -->
+    <div class="share-row">
+      <button id="btn-share">📡 Share Live Location</button>
+      <button id="btn-offline" hidden>🏠 Simulate: Entered Shelter</button>
+    </div>
+  </div>
+
+  <div id="status">
+    <div><span class="label">Progress:</span> <span id="stat-progress">0%</span></div>
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <div><span class="label">Position:</span> <span id="stat-pos">-</span></div>
+    <div><span class="label">Status:</span> <span id="stat-danger" class="danger-status safe">SAFE</span></div>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    // ========== CONFIG ==========
+    const ORIGIN = { lat: 31.9642, lng: 34.8048 };      // Rishon LeZion
+    const DESTINATION = { lat: 32.8093, lng: 35.1134 }; // Kiryat Ata
+
+    // Waypoints used ONLY by the "Use Demo Route" button (Rishon → Kiryat Ata
+    // via Route 2). Shared between loadRoute() (sent to DirectionsService) and
+    // buildCurrentShareUrl() (embedded in the Google Maps deep link) so the
+    // two can never silently diverge.
+    const DEMO_WAYPOINTS = [
+      { lat: 32.3226, lng: 34.8535 }, // Netanya
+      { lat: 32.4340, lng: 34.8887 }, // Hadera
+      { lat: 32.5200, lng: 34.8900 }  // Caesarea
+    ];
+
+    const MOCK_ALERTS = [
+      {
+        triggerAtPercent: 0.22,
+        alert: { type: 'Missiles', cities: ['נתניה - מזרח', 'נתניה - מערב'] },
+        durationMs: 25000
+      },
+      {
+        triggerAtPercent: 0.30,
+        alert: { type: 'Missiles', cities: ['כפר יונה', 'פרדסיה'] },
+        durationMs: 25000
+      },
+      {
+        triggerAtPercent: 0.50,
+        alert: { type: 'Missiles', cities: ['חדרה - מרכז', 'חדרה - מערב'] },
+        durationMs: 18000
+      },
+      {
+        triggerAtPercent: 0.70,
+        alert: { type: 'Missiles', cities: ['אור עקיבא', 'קיסריה'] },
+        durationMs: 20000
+      }
+    ];
+
+    // Cities to show in the manual alert dropdown (along the route corridor)
+    const DROPDOWN_CITIES = [
+      'ראשון לציון - מערב', 'ראשון לציון - מזרח',
+      'בת ים', 'חולון',
+      'הרצליה - מערב', 'הרצליה - מרכז וגליל ים',
+      'רעננה', 'כפר סבא',
+      'נתניה - מזרח', 'נתניה - מערב',
+      'כפר יונה', 'פרדסיה',
+      'חדרה - מרכז', 'חדרה - מערב', 'חדרה - מזרח', 'חדרה - נווה חיים',
+      'אור עקיבא', 'קיסריה', 'נמל קיסריה',
+      'חיפה - מערב', 'חיפה - כרמל, הדר ועיר תחתית',
+      'חיפה - קריית חיים ושמואל', 'חיפה - מפרץ'
+    ];
+
+    // ========== STATE ==========
+    let map;
+    // mainRoutePolyline replaces the legacy DirectionsRenderer — drawn
+    // manually so we control styling + z-order above the TrafficLayer.
+    let mainRoutePolyline = null;
+    let polygonIndex = {};           // cityName -> { latLngs: [], gmapPoly: null }
+    let routePath = [];              // array of google.maps.LatLng
+    let driverMarker = null;
+    let currentIndex = 0;
+    let simInterval = null;
+    let speed = 2;
+    let isRunning = false;
+    let insideDangerZone = false;
+    let activeAlerts = [];           // { polygons: [google.maps.Polygon], cities: [], timerId }
+    let triggeredMockAlerts = new Set();
+    // (Removed legacy `realAlertInterval` handle — startRealAlertPolling
+    //  now owns the timer via `realAlertTimer`.)
+    let trafficLayer = null;
+    let infoWindow = null;
+    let routeTotalMeters = 0;
+    let routeTotalSeconds = 0;
+    let routeStartTime = null; // Date when user clicked Start
+    let gpsWatchId = null;
+    let gpsAccuracyCircle = null;
+    let gpsUpdateCount = 0;
+    // directionsService is gone — replaced by runRoutingRequest (Routes API).
+    let currentOrigin = null;        // { lat, lng, name }
+    let currentDestination = null;   // { lat, lng, name }
+    let originMarker = null;
+    let destMarker = null;
+    let useHardcodedWaypoints = true; // only true for initial route
+    let allShelters = [];               // [{ id, name, lat, lng, type }]
+    let shelterMarkers = [];            // rendered shelter markers on map
+    let currentShelterRoute = null;     // when user navigates to a shelter
+    let alternativeRoutes = [];         // full DirectionsResult.routes array
+    let altRoutePolylines = [];         // non-selected alternative polylines
+    let selectedRouteIndex = 0;         // which of the alternatives is active
+    let escapeRouteActive = false;      // true while escape panel is showing
+    let shareSessionId = null;          // active sharing session id
+    let shareInterval = null;           // interval writing location to localStorage
+    let shareSimulateOffline = false;   // when true, stop pushing updates (simulate shelter)
+    let shareSenderName = 'Driver';     // identifier sent with each ping
+    let shareWriteFailures = 0;         // consecutive localStorage write failures
+
+    // Route-aware alert filter state.
+    // currentRouteMeta = { path, cumulativeMeters } — rebuilt on each route selection.
+    // recentAlertIds = Map<id, firstSeenMs> — dedup window (2 min) for real-feed polling.
+    // lastDangerCheckAt = ms — throttle checkDangerZone() to 500ms (2Hz per tech spec) inside simStep.
+    // lastAlertStats = { received, shown, discarded } — telemetry for the live status line.
+    let currentRouteMeta = null;
+    const recentAlertIds = new Map();
+    const ALERT_DEDUP_WINDOW_MS = 120000;
+    let lastDangerCheckAt = 0;
+    const lastAlertStats = { received: 0, shown: 0, discarded: 0, unknownCity: 0 };
+
+    // Current travel mode ('driving'|'transit'|'walking'|'bicycling').
+    // Mapped to google.maps.TravelMode at route-request time; also used to
+    // pick a per-mode default speed for the route-aware alert filter.
+    let currentTravelMode = 'driving';
+
+    // Becomes true once the user explicitly requests a route (Directions
+    // button, demo-route button, or swap). Reset to false when either
+    // From or To changes so the tabs reappear only when they re-request.
+    let directionsRequested = false;
+
+    // Cached DOM refs for hot paths (populated after DOM is ready via cacheDomRefs)
+    const dom = {};
+
+    // ========== INIT ==========
+    async function initApp() {
+      // Load polygon data — FATAL if missing. Without it, the route-aware
+      // filter cannot reject off-route alerts, so the app is unsafe.
+      try {
+        const resp = await fetch('./locations_polygons.json');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        buildPolygonIndex(data);
+        const zoneCount = Object.keys(polygonIndex).length;
+        if (zoneCount === 0) throw new Error('polygon index is empty');
+        console.log(`Loaded ${zoneCount} alert zones`);
+      } catch (e) {
+        console.error('Failed to load polygon data:', e);
+        setFeedStatus('error',
+          'POLYGON DATA MISSING — alert filtering DISABLED. Run: node download-polygons.js');
+        alert('Failed to load locations_polygons.json — app cannot proceed safely. Run: node download-polygons.js');
+        return;  // hard stop: don't initialise the rest of the app
+      }
+
+      // Load shelter data
+      try {
+        const resp = await fetch('./shelters.json');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        // SAFETY: a JSON parse succeeding does NOT mean the shape is valid.
+        // If the file was regressed to a different key name we'd silently
+        // end up with zero shelters and no banner. Validate and fail loud.
+        if (!data || !Array.isArray(data.shelters)) {
+          throw new Error('shelters.json missing "shelters" array (got keys: ' +
+            (data ? Object.keys(data).join(',') : 'null') + ')');
+        }
+        allShelters = data.shelters;
+        console.log(`Loaded ${allShelters.length} shelters`);
+      } catch (e) {
+        // Loud failure — driver must know shelter suggestions are disabled.
+        console.error('Shelter data unavailable:', e);
+        setFeedStatus('warn',
+          'SHELTER DATA UNAVAILABLE — shelter suggestions disabled. (' + e.message + ')');
+        allShelters = [];
+      }
+
+      // AdvancedMarkerElement lives in the 'marker' library. The Maps
+      // loader URL now requests &libraries=geometry,places,marker, but
+      // explicitly awaiting importLibrary('marker') guarantees the class
+      // is materialised before any marker is instantiated below. Also
+      // required for PinElement used by A/B and shelter markers.
+      if (google.maps.importLibrary) {
+        await google.maps.importLibrary('marker');
+      }
+
+      // Init map — mapId is required for AdvancedMarkerElement to render.
+      // 'DEMO_MAP_ID' is Google's public demo ID accepted by the new APIs.
+      // Note: `styles` cannot coexist with `mapId` (cloud-side controls win).
+      // The POI-visibility tweak we used to have inline must now be
+      // configured via the Map Styles cloud console (follow-up).
+      map = new google.maps.Map(document.getElementById('map'), {
+        center: { lat: 32.4, lng: 34.88 },
+        zoom: 9,
+        mapId: 'DEMO_MAP_ID',
+        mapTypeControl: true,
+        streetViewControl: false
+      });
+
+      // Traffic layer — always on. No toggle (removed per UX-004).
+      trafficLayer = new google.maps.TrafficLayer();
+      trafficLayer.setMap(map);
+
+      // Shared info window for polygon clicks
+      infoWindow = new google.maps.InfoWindow();
+
+      // Routes API (google.maps.routes) replaces the deprecated
+      // DirectionsService + DirectionsRenderer pair. The 'routes' library
+      // is requested both in the Maps script URL and again via
+      // importLibrary (belt + suspenders). The main route is drawn via a
+      // single manually-managed Polyline; alternative routes use the
+      // existing drawAlternativePolylines path.
+      if (google.maps.importLibrary) {
+        await google.maps.importLibrary('routes');
+      }
+      // No route loaded on startup — user picks mode + destination
+
+      // Populate dropdown (works for both sim and live mode dropdowns)
+      populateDropdown();
+
+      // Cache DOM refs used in hot paths (simStep @ 20Hz, danger checks, etc.)
+      cacheDomRefs();
+
+      // Setup UI
+      setupControls();
+      addMyLocationButton();
+
+      // Done loading
+      dom.loading.classList.add('hidden');
+      // Sim controls stay disabled until user loads a route
+      setSimControlsEnabled(false);
+    }
+
+    function cacheDomRefs() {
+      const ids = [
+        'loading', 'map', 'alert-banner', 'alert-text', 'alert-countdown',
+        'instructions-panel', 'danger-indicator',
+        'ri-distance', 'ri-duration', 'ri-eta', 'ri-remaining', 'ri-remaining-row',
+        'route-info', 'route-options', 'shelter-panel',
+        'stat-progress', 'progress-fill', 'stat-pos', 'stat-danger',
+        'btn-start', 'btn-alert', 'btn-recalc', 'btn-share', 'btn-offline',
+        'sim-controls', 'live-controls', 'toast', 'share-link-panel',
+        'live-status'
+      ];
+      for (const id of ids) {
+        // camelCase key: ri-distance -> riDistance
+        const key = id.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        dom[key] = document.getElementById(id);
+      }
+    }
+
+    // ========== LIVE LOCATION SHARING ==========
+    function showShareLinkDialog(url, sid) {
+      const panel = document.getElementById('share-link-panel');
+      if (!panel) return;
+      panel.innerHTML = `
+        <div class="slp-row">
+          <div class="slp-title">📡 Sharing Active</div>
+          <div class="slp-session">session: <code>${sid}</code></div>
+        </div>
+        <div class="slp-url-row">
+          <input type="text" id="slp-url-input" value="${url}" readonly>
+          <button id="slp-copy">Copy</button>
+          <button id="slp-open">Open</button>
+        </div>
+        <div class="slp-hint">Send this link to whoever you want to share with, or click Open to view in a new tab.</div>
+      `;
+      panel.classList.add('visible');
+
+      document.getElementById('slp-copy').addEventListener('click', () => {
+        const input = document.getElementById('slp-url-input');
+        input.select();
+        try {
+          navigator.clipboard.writeText(url);
+          showToast('Link copied to clipboard');
+        } catch (e) {
+          document.execCommand('copy');
+          showToast('Link copied');
+        }
+      });
+      document.getElementById('slp-open').addEventListener('click', () => {
+        window.open(url, '_blank');
+      });
+    }
+
+    function hideShareLinkDialog() {
+      const panel = document.getElementById('share-link-panel');
+      if (panel) panel.classList.remove('visible');
+    }
+
+    function cleanupOldShareData() {
+      // Remove any share_* keys that are more than 1 hour old
+      const oneHourAgo = Date.now() - 3600000;
+      Object.keys(localStorage).forEach(key => {
+        if (!key.startsWith('share_')) return;
+        try {
+          if (key.endsWith('_ended')) {
+            const t = parseInt(localStorage.getItem(key));
+            if (t && t < oneHourAgo) {
+              localStorage.removeItem(key);
+              localStorage.removeItem(key.replace(/_ended$/, ''));
+            }
+          } else {
+            const data = JSON.parse(localStorage.getItem(key));
+            if (data && data.timestamp && data.timestamp < oneHourAgo) {
+              localStorage.removeItem(key);
+            }
+          }
+        } catch (e) {
+          console.warn('[share-cleanup] skipping unparseable key', key, e.message);
+        }
+      });
+    }
+
+    function startSharing() {
+      if (shareInterval) return; // already sharing
+
+      cleanupOldShareData();
+
+      shareSessionId = Math.random().toString(36).slice(2, 10);
+      const url = `./receiver.html?session=${shareSessionId}`;
+      const fullUrl = new URL(url, location.href).href;
+
+      // Open receiver in a new TAB (not a popup) - much more reliable, won't close unexpectedly
+      const w = window.open(url, '_blank');
+      if (!w) {
+        console.warn('[Share] Tab blocked. Receiver URL:', fullUrl);
+      }
+
+      // Always show the URL in a persistent dialog so user can open/copy/share it
+      showShareLinkDialog(fullUrl, shareSessionId);
+
+      shareSimulateOffline = false;
+      // Push location every 2 seconds
+      shareInterval = setInterval(pushSharedLocation, 2000);
+      pushSharedLocation(); // immediate first push
+      console.log(`[Share] Started session ${shareSessionId}. Receiver URL: ${url}`);
+      showToast('📡 Sharing live location — session: ' + shareSessionId);
+      updateShareButton();
+    }
+
+    function stopSharing() {
+      if (shareInterval) {
+        clearInterval(shareInterval);
+        shareInterval = null;
+      }
+      if (shareSessionId) {
+        // Leave the last known data in localStorage so receiver shows "lost" state
+        // but no longer push new updates
+        localStorage.setItem(`share_${shareSessionId}_ended`, Date.now().toString());
+      }
+      shareSessionId = null;
+      shareSimulateOffline = false;
+      shareWriteFailures = 0;
+      hideShareLinkDialog();
+      showToast('Sharing stopped');
+      updateShareButton();
+    }
+
+    function pushSharedLocation() {
+      if (!shareSessionId) return;
+      if (shareSimulateOffline) {
+        console.log('[Share] Skipping push — offline simulation active');
+        return;
+      }
+
+      // Prefer actual driver position; fall back to route origin for pre-simulation sharing
+      let lat, lng, accuracy = null;
+      if (driverMarker) {
+        const pos = driverMarker.position;
+        if (!pos) return;
+        lat = toLat(pos);
+        lng = toLng(pos);
+        accuracy = gpsAccuracyCircle ? gpsAccuracyCircle.getRadius() : null;
+      } else if (currentOrigin) {
+        lat = currentOrigin.lat;
+        lng = currentOrigin.lng;
+      } else {
+        return; // nothing to share yet
+      }
+
+      const data = {
+        name: shareSenderName,
+        lat: lat,
+        lng: lng,
+        timestamp: Date.now(),
+        inDanger: insideDangerZone,
+        accuracy: accuracy,
+        status: driverMarker ? (isRunning ? 'driving' : 'gps-tracking') : 'waiting-to-drive'
+      };
+      try {
+        const key = `share_${shareSessionId}`;
+        localStorage.setItem(key, JSON.stringify(data));
+        console.log(`[Share] wrote ${key}:`, data);
+        shareWriteFailures = 0;
+      } catch (e) {
+        // SAFETY: do NOT silently swallow — the user thinks their location
+        // is being shared. Toast the first failure and stop sharing on
+        // repeated failures so the UI stops lying.
+        console.error('Failed to write share data:', e);
+        shareWriteFailures = (shareWriteFailures || 0) + 1;
+        if (shareWriteFailures === 1) {
+          showToast('⚠️ Share failed — storage unavailable (' + (e.message || 'unknown') + ')', true, 5000);
+        }
+        if (shareWriteFailures >= 3) {
+          showToast('⚠️ Sharing disabled after repeated storage failures', true, 8000);
+          stopSharing();
+        }
+      }
+    }
+
+    function toggleOfflineSimulation() {
+      shareSimulateOffline = !shareSimulateOffline;
+      console.log(`[Share] Offline simulation: ${shareSimulateOffline ? 'ON' : 'OFF'}`);
+      updateShareButton();
+      if (shareSimulateOffline) {
+        showToast('🏠 Simulating shelter entry — no more location pings (receiver will show offline after ~4s)', false, 6000);
+      } else {
+        showToast('📡 Back online — resuming location pings');
+        pushSharedLocation();
+      }
+    }
+
+    function updateShareButton() {
+      const btn = document.getElementById('btn-share');
+      const btnOffline = document.getElementById('btn-offline');
+      if (!btn) return;
+
+      if (shareSessionId) {
+        btn.textContent = '🛑 Stop Sharing';
+        btn.classList.add('active');
+        if (btnOffline) {
+          btnOffline.hidden = false;
+          btnOffline.textContent = shareSimulateOffline
+            ? '📡 Simulate: Back Online'
+            : '🏠 Simulate: Entered Shelter';
+        }
+      } else {
+        btn.textContent = '📡 Share Live Location';
+        btn.classList.remove('active');
+        if (btnOffline) btnOffline.hidden = true;
+      }
+    }
+
+    // ========== SHELTERS ==========
+    function findNearestShelters(position, count = 3) {
+      if (!allShelters.length || !position) return [];
+      const items = allShelters.map(s => {
+        const sLatLng = new google.maps.LatLng(s.lat, s.lng);
+        const d = google.maps.geometry.spherical.computeDistanceBetween(position, sLatLng);
+        return { shelter: s, distance: d };
+      });
+      items.sort((a, b) => a.distance - b.distance);
+      return items.slice(0, count);
+    }
+
+    function showShelterPanel(nearest, isEscape = false) {
+      const panel = document.getElementById('shelter-panel');
+      if (!panel) return;
+
+      if (!nearest || nearest.length === 0) {
+        hideShelterPanel();
+        return;
+      }
+
+      const icon = isEscape ? '🚨' : '🛡️';
+      const titleClass = isEscape ? 'sp-title-escape' : 'sp-title-shelter';
+      const title = isEscape ? 'Escape — Nearest Shelters' : 'Nearest Shelter';
+
+      let html = `<h4 class="${titleClass}">${icon} ${title}</h4>`;
+      nearest.forEach((item) => {
+        const km = (item.distance / 1000).toFixed(1);
+        html += `
+          <div class="sp-item ${isEscape ? 'escape' : ''}">
+            <div class="sp-name">${item.shelter.name}</div>
+            <div class="sp-meta">${km} km · ${item.shelter.type}</div>
+            <button data-shelter-id="${item.shelter.id}">Navigate to Shelter</button>
+          </div>
+        `;
+      });
+      // Quick share button in shelter panel — one tap to share location with family
+      const shareLabel = shareSessionId ? '🛑 Stop Sharing' : '📡 Share Live Location';
+      html += `
+        <div class="sp-item" style="border-top:1px solid #eee;padding-top:10px;margin-top:8px">
+          <div class="sp-meta" style="margin-bottom:6px">Let someone know where you are</div>
+          <button id="sp-share-btn" style="background:${shareSessionId ? '#d32f2f' : '#00897b'}">${shareLabel}</button>
+        </div>
+      `;
+
+      panel.innerHTML = html;
+      panel.className = 'visible' + (isEscape ? ' escape' : '');
+
+      panel.querySelectorAll('button[data-shelter-id]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.shelterId;
+          const s = allShelters.find(x => x.id === id);
+          if (s) navigateToShelter(s);
+        });
+      });
+
+      // Wire the share button inside the shelter panel
+      const spShareBtn = document.getElementById('sp-share-btn');
+      if (spShareBtn) {
+        spShareBtn.addEventListener('click', () => {
+          if (shareSessionId) {
+            stopSharing();
+          } else {
+            startSharing();
+          }
+          // Re-render the panel so the button text updates
+          if (driverMarker) {
+            const refreshed = findNearestShelters(driverMarker.position, 1);
+            showShelterPanel(refreshed, isEscape);
+          }
+        });
+      }
+    }
+
+    function hideShelterPanel() {
+      const panel = document.getElementById('shelter-panel');
+      if (panel) panel.classList.remove('visible', 'escape');
+    }
+
+    async function navigateToShelter(shelter) {
+      const fromPos = driverMarker
+        ? driverMarker.position
+        : new google.maps.LatLng(currentOrigin.lat, currentOrigin.lng);
+
+      try {
+        const result = await runRoutingRequest({
+          origin: { lat: toLat(fromPos), lng: toLng(fromPos) },
+          destination: { lat: shelter.lat, lng: shelter.lng },
+          travelMode: 'driving'
+        });
+        // Switch display to shelter route
+        alternativeRoutes = result.routes;
+        selectedRouteIndex = 0;
+        renderMainRoute(result.routes[0]);
+        clearAltRoutePolylines();
+        applySelectedRoute(0);
+        updateRouteOptionsPanel();
+
+        // Move B marker to shelter (AdvancedMarkerElement with PinElement glyph)
+        if (destMarker) destMarker.map = null;
+        destMarker = new google.maps.marker.AdvancedMarkerElement({
+          position: { lat: shelter.lat, lng: shelter.lng },
+          map: map,
+          content: new google.maps.marker.PinElement({
+            glyphText: '🛡️', glyphColor: 'white',
+            background: '#137333', borderColor: '#0d652d'
+          }),
+          title: shelter.name
+        });
+        currentDestination = { lat: shelter.lat, lng: shelter.lng, name: shelter.name };
+        updateDirectionsGate();
+
+        if (result.routes[0].bounds) {
+          map.fitBounds(result.routes[0].bounds, 60);
+        }
+        showToast(`Navigating to ${shelter.name}`);
+      } catch (e) {
+        console.error('Navigate to shelter failed:', e);
+        const shelterDest = { name: shelter.name };
+        showToast(humanizeDirectionsError(e, currentOrigin, shelterDest), true, 6000);
+      }
+    }
+
+    // ========== ESCAPE ROUTE ==========
+    async function computeEscapeRoutes(driverPos, dangerPolygons) {
+      try {
+        const result = await runRoutingRequest({
+          origin: { lat: toLat(driverPos), lng: toLng(driverPos) },
+          destination: { lat: currentDestination.lat, lng: currentDestination.lng },
+          travelMode: 'driving',
+          alternatives: true
+        });
+
+        // Filter: prefer routes whose first 30% exits the danger polygon
+        const scored = result.routes.map(route => {
+          const path = route.overview_path;
+          const checkCount = Math.max(10, Math.floor(path.length * 0.3));
+          let exitIdx = -1;
+          for (let i = 0; i < Math.min(checkCount, path.length); i++) {
+            const inAny = dangerPolygons.some(poly =>
+              google.maps.geometry.poly.containsLocation(path[i], poly)
+            );
+            if (!inAny) {
+              exitIdx = i;
+              break;
+            }
+          }
+          let totalM = 0, totalS = 0;
+          for (const leg of route.legs) {
+            totalM += leg.distance.value;
+            totalS += leg.duration.value;
+          }
+          return { route, exitIdx, distance: totalM, duration: totalS };
+        });
+
+        // Routes that exit quickly come first
+        scored.sort((a, b) => {
+          if (a.exitIdx === -1 && b.exitIdx !== -1) return 1;
+          if (b.exitIdx === -1 && a.exitIdx !== -1) return -1;
+          return a.duration - b.duration;
+        });
+
+        return scored;
+      } catch (e) {
+        // LOUD: driver is currently in a danger zone; they MUST be told
+        // route calculation failed so they fall back to the shelter panel.
+        console.error('Escape route calc failed:', e);
+        setFeedStatus('error',
+          'ESCAPE ROUTE CALCULATION FAILED — use nearest shelter. (' + (e.message || e) + ')');
+        throw e;
+      }
+    }
+
+    function showEscapeRoutePanel(scoredRoutes) {
+      const panel = document.getElementById('shelter-panel');
+      if (!panel) return;
+
+      let html = `<h4 class="sp-title-escape">🚨 Escape Routes</h4>`;
+
+      const usable = scoredRoutes.filter(r => r.exitIdx !== -1).slice(0, 2);
+      if (usable.length === 0) {
+        html += `<div class="sp-item"><div class="sp-name">No clear escape route</div>
+                 <div class="sp-meta">Follow Pikud HaOref shelter instructions</div></div>`;
+        // Also show shelters as fallback
+        const nearest = findNearestShelters(driverMarker.position, 2);
+        nearest.forEach((item) => {
+          const km = (item.distance / 1000).toFixed(1);
+          html += `
+            <div class="sp-item escape">
+              <div class="sp-name">🛡️ ${item.shelter.name}</div>
+              <div class="sp-meta">${km} km</div>
+              <button data-shelter-id="${item.shelter.id}">Navigate to Shelter</button>
+            </div>
+          `;
+        });
+      } else {
+        usable.forEach((s, i) => {
+          html += `
+            <div class="sp-item escape">
+              <div class="sp-name">Escape Route ${i + 1}</div>
+              <div class="sp-meta">${formatDistance(s.distance)} · ${formatDuration(s.duration)} · exits zone quickly</div>
+              <button data-escape-idx="${i}">Take This Route</button>
+            </div>
+          `;
+        });
+      }
+
+      panel.innerHTML = html;
+      panel.className = 'visible escape';
+
+      // Wire escape route buttons
+      panel.querySelectorAll('button[data-escape-idx]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const i = parseInt(btn.dataset.escapeIdx);
+          applyEscapeRoute(usable[i].route);
+        });
+      });
+      // Wire shelter buttons (fallback)
+      panel.querySelectorAll('button[data-shelter-id]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.shelterId;
+          const s = allShelters.find(x => x.id === id);
+          if (s) navigateToShelter(s);
+        });
+      });
+    }
+
+    function applyEscapeRoute(route) {
+      alternativeRoutes = [route];
+      selectedRouteIndex = 0;
+      renderMainRoute(route);
+      clearAltRoutePolylines();
+      applySelectedRoute(0);
+      updateRouteOptionsPanel();
+      if (route.bounds) map.fitBounds(route.bounds, 60);
+      showToast('Escape route activated');
+    }
+
+    async function triggerEscapeMode() {
+      if (escapeRouteActive) return;
+      if (!driverMarker) return;
+      escapeRouteActive = true;
+
+      const dangerPolygons = [];
+      activeAlerts.forEach(a => dangerPolygons.push(...a.polygons));
+      if (dangerPolygons.length === 0) return;
+
+      const driverPos = driverMarker.position;
+      let scored;
+      try {
+        scored = await computeEscapeRoutes(driverPos, dangerPolygons);
+      } catch (e) {
+        // computeEscapeRoutes already surfaced the feed-status banner and
+        // logged. Fall through to the shelter panel (which computeEscape
+        // would have suggested even on success) so the driver still has
+        // options.
+        escapeRouteActive = false;
+        const nearest = findNearestShelters(driverPos, 3);
+        if (nearest.length > 0) showShelterPanel(nearest, true);
+        return;
+      }
+      showEscapeRoutePanel(scored);
+    }
+
+    function exitEscapeMode() {
+      escapeRouteActive = false;
+      hideShelterPanel();
+    }
+
+    // ========== ROUTE ALTERNATIVES & DANGER ==========
+    function applySelectedRoute(index) {
+      if (!alternativeRoutes[index]) return;
+      selectedRouteIndex = index;
+      renderMainRoute(alternativeRoutes[index]);
+
+      const route = alternativeRoutes[index];
+      routeTotalMeters = 0;
+      routeTotalSeconds = 0;
+      for (const leg of route.legs) {
+        routeTotalMeters += leg.distance.value;
+        routeTotalSeconds += leg.duration.value;
+      }
+      updateRouteInfoCard();
+
+      routePath.length = 0;
+      for (const leg of route.legs) {
+        for (const step of leg.steps) {
+          for (const point of step.path) {
+            routePath.push(point);
+          }
+        }
+      }
+      console.log(`Active route: #${index}, ${routePath.length} points`);
+
+      // Rebuild cumulative-distance metadata for the route-aware filter and
+      // re-evaluate any alerts already on screen against the new route.
+      if (global_hasAlertFilter && global_hasAlertFilter()) {
+        currentRouteMeta = window.AlertRouteFilter.buildRouteWithCumulative(routePath);
+        reEvaluateActiveAlertsForRoute();
+      }
+    }
+
+    function clearAltRoutePolylines() {
+      altRoutePolylines.forEach(p => p.setMap(null));
+      altRoutePolylines = [];
+    }
+
+    function drawAlternativePolylines() {
+      clearAltRoutePolylines();
+      if (alternativeRoutes.length < 2) return;
+      for (let i = 1; i < alternativeRoutes.length; i++) {
+        const line = new google.maps.Polyline({
+          path: alternativeRoutes[i].overview_path,
+          map: map,
+          strokeColor: '#999',
+          strokeOpacity: 0.6,
+          strokeWeight: 3,
+          zIndex: 2
+        });
+        line.altIndex = i;
+        line.addListener('click', () => selectRoute(i));
+        altRoutePolylines.push(line);
+      }
+    }
+
+    function selectRoute(index) {
+      if (index === selectedRouteIndex) return;
+      applySelectedRoute(index);
+      // Redraw alts so newly-selected one disappears, old selected appears
+      drawAlternativePolylines();
+      updateRouteOptionsPanel();
+      // Re-fit bounds to the new selected route
+      if (alternativeRoutes[index].bounds) {
+        map.fitBounds(alternativeRoutes[index].bounds, 60);
+      }
+    }
+
+    // Sample the route overview_path and check how many active alert polygons it intersects
+    function countRouteAlertIntersections(route) {
+      if (activeAlerts.length === 0) return 0;
+      const samples = route.overview_path;
+      const intersecting = new Set();
+      for (const alert of activeAlerts) {
+        for (const poly of alert.polygons) {
+          for (let i = 0; i < samples.length; i += 3) {
+            if (google.maps.geometry.poly.containsLocation(samples[i], poly)) {
+              intersecting.add(poly);
+              break;
+            }
+          }
+        }
+      }
+      return intersecting.size;
+    }
+
+    // Update the Route Options panel (show each alternative + danger status)
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Produce a "via X" label for a route. Prefer Google's `route.summary`
+    // (the dominant highway name); fall back to the longest leg step's
+    // road name, which is what Google Maps' own UI shows when summary is
+    // empty (e.g. walking/bicycling routes).
+    function summarizeRouteVia(route) {
+      if (route.summary) return route.summary;
+      // Scan steps for the longest one with a recognisable instruction.
+      let best = null, bestLen = 0;
+      for (const leg of route.legs) {
+        for (const step of leg.steps) {
+          const len = step.distance ? step.distance.value : 0;
+          if (len > bestLen && step.instructions) {
+            bestLen = len;
+            best = step.instructions.replace(/<[^>]+>/g, '').trim();
+          }
+        }
+      }
+      if (best && best.length > 40) best = best.slice(0, 40) + '…';
+      return best;
+    }
+
+    function updateRouteOptionsPanel() {
+      const panel = document.getElementById('route-options');
+      if (!panel) return;
+
+      if (alternativeRoutes.length <= 1) {
+        panel.classList.remove('visible');
+        return;
+      }
+
+      let html = '<h4>Route options</h4>';
+      alternativeRoutes.forEach((route, idx) => {
+        let totalM = 0, totalS = 0;
+        for (const leg of route.legs) {
+          totalM += leg.distance.value;
+          totalS += leg.duration.value;
+        }
+        const dangerCount = countRouteAlertIntersections(route);
+        const isActive = idx === selectedRouteIndex;
+        const badge = dangerCount > 0
+          ? `<span class="ro-badge danger">${dangerCount} danger zone${dangerCount > 1 ? 's' : ''}</span>`
+          : '';
+        const via = summarizeRouteVia(route);
+        html += `
+          <div class="route-opt ${isActive ? 'active' : ''} ${dangerCount > 0 ? 'has-danger' : ''}"
+               data-idx="${idx}">
+            <div class="ro-name">${formatDuration(totalS)}${badge}</div>
+            <div class="ro-stats">${formatDistance(totalM)}</div>
+            ${via ? `<div class="ro-via">via ${escapeHtml(via)}</div>` : '<div class="ro-via"></div>'}
+          </div>
+        `;
+      });
+      panel.innerHTML = html;
+      panel.classList.add('visible');
+
+      // Wire clicks
+      panel.querySelectorAll('.route-opt').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.dataset.idx);
+          selectRoute(idx);
+        });
+      });
+    }
+
+    // ========== ROUTE LOADING ==========
+    async function loadRoute() {
+      // Stop simulation / GPS if active
+      if (isRunning) stopSimulation();
+
+      // Clear previous driver marker
+      if (driverMarker) {
+        driverMarker.map = null;
+        driverMarker = null;
+      }
+
+      // Clear previous A/B markers
+      if (originMarker) originMarker.map = null;
+      if (destMarker) destMarker.map = null;
+
+      // Clear previous alternative route polylines
+      clearAltRoutePolylines();
+
+      // Build Routes-API request (mode enum mapping handled by runRoutingRequest).
+      const req = {
+        origin: { lat: currentOrigin.lat, lng: currentOrigin.lng },
+        destination: { lat: currentDestination.lat, lng: currentDestination.lng },
+        travelMode: currentTravelMode,
+        alternatives: true
+      };
+      // Route-2 demo waypoints — only driving respects them.
+      if (useHardcodedWaypoints && currentTravelMode === 'driving') {
+        req.waypoints = DEMO_WAYPOINTS.map(wp => ({ location: wp }));
+        req.alternatives = false;
+      }
+
+      try {
+        const result = await runRoutingRequest(req);
+        alternativeRoutes = result.routes || [];
+        selectedRouteIndex = 0;
+        renderMainRoute(result.routes[0]);
+
+        if (result.routes[0].bounds) {
+          map.fitBounds(result.routes[0].bounds, 60);
+        }
+
+        // Compute route totals for the selected route
+        applySelectedRoute(0);
+
+        // Draw non-selected alternative polylines (lighter, dashed-ish)
+        drawAlternativePolylines();
+
+        // Update the route options panel
+        updateRouteOptionsPanel();
+
+        // A/B markers (AdvancedMarkerElement + PinElement)
+        originMarker = new google.maps.marker.AdvancedMarkerElement({
+          position: req.origin, map: map,
+          content: new google.maps.marker.PinElement({
+            glyphText: 'A', glyphColor: 'white',
+            background: '#1a73e8', borderColor: '#1765cc'
+          }),
+          title: currentOrigin.name
+        });
+        destMarker = new google.maps.marker.AdvancedMarkerElement({
+          position: req.destination, map: map,
+          content: new google.maps.marker.PinElement({
+            glyphText: 'B', glyphColor: 'white',
+            background: '#d93025', borderColor: '#b1261b'
+          }),
+          title: currentDestination.name
+        });
+
+        // Reset mock alert trigger state so alerts fire again on next sim run
+        triggeredMockAlerts.clear();
+
+        // Route exists — enable simulation controls
+        setSimControlsEnabled(true);
+
+        return true;
+      } catch (e) {
+        console.error('Directions failed:', e);
+        showToast(humanizeDirectionsError(e, currentOrigin, currentDestination), true, 6000);
+        return false;
+      }
+    }
+
+    // Translate raw DirectionsService errors into a message the driver can act on.
+    // ZERO_RESULTS almost always means one endpoint is off-grid (middle of a
+    // lake, deep in a park, a pin dropped offshore). Naming the likely culprit
+    // beats showing the MapsRequestError stack.
+    function humanizeDirectionsError(err, origin, destination) {
+      const raw = (err && (err.message || err.code || '')) + '';
+      const oName = (origin && origin.name) || 'origin';
+      const dName = (destination && destination.name) || 'destination';
+      if (/ZERO_RESULTS/i.test(raw)) {
+        return `No driving route found between "${oName}" and "${dName}". ` +
+               `One of them may be off-road (water, park, etc.) — try picking ` +
+               `a nearby city, street, or landmark.`;
+      }
+      if (/NOT_FOUND/i.test(raw)) {
+        return `One of the locations could not be geocoded. Try a more specific address.`;
+      }
+      if (/OVER_QUERY_LIMIT|REQUEST_DENIED/i.test(raw)) {
+        return 'Map service temporarily unavailable — please try again in a moment.';
+      }
+      return 'Route calculation failed: ' + (err.message || err.code || 'unknown');
+    }
+
+    function setSimControlsEnabled(enabled) {
+      const startBtn = document.getElementById('btn-start');
+      const alertBtn = document.getElementById('btn-alert');
+      if (startBtn) startBtn.disabled = !enabled;
+      if (alertBtn) alertBtn.disabled = !enabled;
+    }
+
+    // ========== POLYGON INDEX ==========
+    function buildPolygonIndex(data) {
+      for (const [name, coords] of Object.entries(data)) {
+        if (name.startsWith('_')) continue;
+        if (!Array.isArray(coords) || coords.length < 3) continue;
+
+        // Convert [lng, lat] -> { lat, lng } for Google Maps
+        const latLngs = coords.map(c => ({ lat: c[1], lng: c[0] }));
+
+        polygonIndex[name] = { latLngs };
+      }
+    }
+
+    function populateDropdown() {
+      const selects = [
+        document.getElementById('alert-select'),
+        document.getElementById('alert-select-live')
+      ].filter(Boolean);
+      DROPDOWN_CITIES.forEach(city => {
+        if (!polygonIndex[city]) return;
+        selects.forEach(sel => {
+          const opt = document.createElement('option');
+          opt.value = city;
+          opt.textContent = city;
+          sel.appendChild(opt);
+        });
+      });
+    }
+
+    // ========== ALERT SYSTEM ==========
+    function fireAlert(alertData) {
+      const polygons = [];
+      const matchedCities = [];
+      const missingCities = [];
+
+      alertData.cities.forEach(cityName => {
+        const zone = polygonIndex[cityName];
+        if (!zone) {
+          missingCities.push(cityName);
+          // Partial match diagnostic only — does not substitute a real polygon.
+          const partialKey = Object.keys(polygonIndex).find(k => k.includes(cityName));
+          if (partialKey) {
+            console.warn(`[alert] no polygon for "${cityName}" — closest: "${partialKey}"`);
+          } else {
+            console.warn(`[alert] no polygon for "${cityName}" — no partial match`);
+          }
+          return;
+        }
+
+        const poly = new google.maps.Polygon({
+          paths: zone.latLngs,
+          strokeColor: '#FF0000',
+          strokeOpacity: 0.8,
+          strokeWeight: 2,
+          fillColor: '#FF0000',
+          fillOpacity: 0.25,
+          map: map,
+          zIndex: 5
+        });
+
+        // Click handler - show alert details.
+        // SAFETY: _durationMs is set by fireAlertWithDuration from every
+        // alert-source path. A missing value means the caller bypassed the
+        // funnel — surface it instead of silently showing a 20s duration.
+        const firedAt = new Date();
+        if (typeof alertData._durationMs !== 'number' || !isFinite(alertData._durationMs) || alertData._durationMs <= 0) {
+          throw new Error('fireAlert: alertData._durationMs is required (got ' + alertData._durationMs + ')');
+        }
+        const durationSec = Math.ceil(alertData._durationMs / 1000);
+        poly.addListener('click', (e) => {
+          infoWindow.setContent(`
+            <div style="font-family:Arial,sans-serif;font-size:13px;min-width:180px;padding:4px">
+              <div style="font-weight:700;color:#d32f2f;margin-bottom:6px">
+                ⚠️ ${alertData.type}
+              </div>
+              <div><strong>Zone:</strong> ${cityName}</div>
+              <div><strong>Fired:</strong> ${firedAt.toLocaleTimeString()}</div>
+              <div><strong>Duration:</strong> ${durationSec}s</div>
+            </div>
+          `);
+          infoWindow.setPosition(e.latLng);
+          infoWindow.open(map);
+        });
+
+        polygons.push(poly);
+        matchedCities.push(cityName);
+      });
+
+      if (polygons.length === 0) {
+        // SAFETY: every incoming alert had at least one city but we couldn't
+        // find any polygons. That's a data problem, not a normal skip.
+        console.error('[alert] dropped — no polygons matched for cities:', alertData.cities);
+        setFeedStatus('warn',
+          'ALERT RECEIVED BUT POLYGON DATA MISSING for: ' + alertData.cities.join(', '));
+        return;
+      }
+      if (missingCities.length > 0) {
+        setFeedStatus('warn',
+          'ALERT PARTIALLY RENDERED — polygon missing for: ' + missingCities.join(', '));
+      }
+
+      // Show banner
+      const bannerText = document.getElementById('alert-text');
+      bannerText.textContent = `⚠️ ${alertData.type}: ${matchedCities.join(', ')}`;
+      document.getElementById('alert-banner').classList.add('visible');
+
+      const alertEntry = { polygons, cities: matchedCities, timerId: null };
+      activeAlerts.push(alertEntry);
+
+      // Refresh Route Options danger counts (route alternatives may now cross danger)
+      updateRouteOptionsPanel();
+
+      // Check danger immediately
+      if (driverMarker) {
+        checkDangerZone(driverMarker.position);
+      }
+
+      // If not already in escape mode, show nearest shelter as a preemptive info
+      if (!escapeRouteActive && driverMarker) {
+        const nearest = findNearestShelters(driverMarker.position, 1);
+        if (nearest.length > 0) {
+          showShelterPanel(nearest, false);
+        }
+      }
+
+      return alertEntry;
+    }
+
+    function clearAlertEntry(entry) {
+      entry.polygons.forEach(p => p.setMap(null));
+      if (entry.timerId) clearTimeout(entry.timerId);
+
+      const idx = activeAlerts.indexOf(entry);
+      if (idx !== -1) activeAlerts.splice(idx, 1);
+
+      if (activeAlerts.length === 0) {
+        document.getElementById('alert-banner').classList.remove('visible', 'inside');
+        document.getElementById('map').classList.remove('danger-glow');
+        insideDangerZone = false;
+        escapeRouteActive = false;
+        updateDangerStatus(false);
+        hideShelterPanel();
+        updateRouteOptionsPanel();
+      }
+    }
+
+    function fireAlertWithDuration(alertData, durationMs) {
+      alertData._durationMs = durationMs;
+      const entry = fireAlert(alertData);
+      if (!entry) return;
+
+      // Countdown
+      let remaining = Math.ceil(durationMs / 1000);
+      const countdownEl = document.getElementById('alert-countdown');
+      const countdownInterval = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+          countdownEl.textContent = `Alert expires in ${remaining}s`;
+        } else {
+          clearInterval(countdownInterval);
+          countdownEl.textContent = '';
+        }
+      }, 1000);
+      countdownEl.textContent = `Alert expires in ${remaining}s`;
+
+      entry.timerId = setTimeout(() => {
+        clearInterval(countdownInterval);
+        clearAlertEntry(entry);
+        // Re-check danger after clearing
+        if (driverMarker && isRunning) {
+          checkDangerZone(driverMarker.position);
+        }
+      }, durationMs);
+    }
+
+    // ========== ROUTE-AWARE INCOMING ALERT ==========
+    // Single funnel for every alert source (mock in simStep, live-feed polling,
+    // manual dropdown can bypass via { bypassFilter:true }). Keeps the filter
+    // rule in one place so sim and live share behaviour.
+    function currentDriverState() {
+      const pos = driverMarker ? driverMarker.position : null;
+      // Per-mode default speed (m/s). Used for ETA-to-polygon in the alert
+      // filter. driving=27.78 (100 km/h), bicycling=4.2 (15 km/h),
+      // walking=1.4 (5 km/h), transit=15 (54 km/h average). Live GPS
+      // `coords.speed` could override this — deferred as a follow-up.
+      const speed = (window.MapsShareLink && window.MapsShareLink.defaultSpeedMps)
+        ? window.MapsShareLink.defaultSpeedMps(currentTravelMode)
+        : 27.78;
+      return { position: pos, speedMps: speed };
+    }
+
+    function evictExpiredAlertIds(nowMs) {
+      for (const [id, seen] of recentAlertIds) {
+        if (nowMs - seen > ALERT_DEDUP_WINDOW_MS) recentAlertIds.delete(id);
+      }
+    }
+
+    // opts: { bypassFilter?: boolean, source?: 'mock'|'live'|'manual' }
+    function processIncomingAlert(alertData, durationMs, opts) {
+      opts = opts || {};
+      lastAlertStats.received++;
+
+      // Dedup by id (real-feed alerts carry an id; mock/manual typically don't)
+      const now = Date.now();
+      evictExpiredAlertIds(now);
+      if (alertData.id && recentAlertIds.has(alertData.id)) {
+        lastAlertStats.discarded++;
+        return { relevant: false, reason: 'duplicate' };
+      }
+      if (alertData.id) recentAlertIds.set(alertData.id, now);
+
+      if (opts.bypassFilter) {
+        fireAlertWithDuration(alertData, durationMs);
+        lastAlertStats.shown++;
+        return { relevant: true, reason: 'bypass' };
+      }
+
+      // SAFETY: no degraded "show everything" mode. If the filter libs
+      // are not loaded, we refuse to process alerts because the driver
+      // would be flooded with out-of-area sirens with no route filter.
+      // Surface the failure to the user and drop the incoming alert.
+      if (!global_hasAlertFilter()) {
+        lastAlertStats.discarded++;
+        setFeedStatus('error',
+          'ALERT FILTER NOT LOADED — alerts are paused. Reload the page.');
+        console.error('[alert-funnel] filter libs missing, alert dropped:', alertData);
+        return { relevant: false, reason: 'filter_unavailable' };
+      }
+
+      const verdict = window.AlertRouteFilter.filterAlertForRoute({
+        alert: alertData,
+        polygonIndex: polygonIndex,
+        route: currentRouteMeta,
+        driver: currentDriverState(),
+        bufferMeters: 3000,
+        shelterSecondsFor: window.ShelterTime.shelterSecondsFor
+      });
+
+      if (!verdict.relevant) {
+        lastAlertStats.discarded++;
+        const unknownCount = Object.values(verdict.reasonByCity || {})
+          .filter(r => r === 'unknown_city').length;
+        if (unknownCount > 0) lastAlertStats.unknownCity += unknownCount;
+        console.log(
+          `[alert-filter] discarded ${opts.source || 'unknown'} alert (${alertData.cities.join(', ')}): `,
+          verdict.reasonByCity
+        );
+        return verdict;
+      }
+
+      // Strip cities whose polygon is not relevant so we don't render noise
+      const filtered = Object.assign({}, alertData, { cities: verdict.relevantCities });
+      fireAlertWithDuration(filtered, durationMs);
+      lastAlertStats.shown++;
+      console.log(
+        `[alert-filter] shown ${opts.source || 'unknown'} alert (${verdict.relevantCities.join(', ')}):`,
+        verdict.verdicts
+      );
+      // SAFETY: surface the filter's uncertainty flags to the driver.
+      // shelterTimeUnknown -> region not in lookup, too_late cannot be
+      // computed reliably. driver_off_route -> route-aware filter degraded.
+      // speedAssumption=stationary -> ETA computed from pessimistic clamp.
+      const unknownShelterCities = verdict.verdicts
+        .filter(v => v.shelterTimeUnknown)
+        .map(v => v.city);
+      if (unknownShelterCities.length > 0) {
+        setFeedStatus('warn',
+          'ALERT SHELTER-TIME UNKNOWN for: ' + unknownShelterCities.join(', ') +
+          ' — timing verdict may be inaccurate.');
+      }
+      const offRouteCount = verdict.verdicts.filter(v => v.reason === 'driver_off_route').length;
+      if (offRouteCount > 0) {
+        setFeedStatus('warn',
+          'DRIVER OFF-ROUTE (>500m from planned route) — showing all alerts without route filtering.');
+      }
+      const stationaryCount = verdict.verdicts.filter(v => v.speedAssumption === 'stationary').length;
+      if (stationaryCount > 0) {
+        setFeedStatus('warn',
+          'DRIVER STATIONARY — alert timing computed with pessimistic speed; ETA may be conservative.');
+      }
+      return verdict;
+    }
+
+    function global_hasAlertFilter() {
+      return typeof window !== 'undefined'
+        && window.AlertRouteFilter
+        && window.ShelterTime;
+    }
+
+    // ========== FEED STATUS (SAFETY-NO-FALLBACKS-001) ==========
+    // Success ('ok') surfaces quietly as the "Pikud HaOref feed" tag in Live
+    // mode. Warn/error states stay loud — they show the top banner too, since
+    // actionable failures must not hide. Silent success, loud failures.
+    // state: 'ok' | 'warn' | 'error'.
+    let feedState = 'starting';  // 'on' | 'starting' | 'off' — drives the tag
+    function setFeedStatus(state, message) {
+      feedState = state === 'ok' ? 'on' : state === 'error' ? 'off' : 'starting';
+      const el = document.getElementById('feed-status-banner');
+      if (el) {
+        if (state === 'ok') {
+          el.classList.add('hidden');
+        } else {
+          el.classList.remove('hidden', 'ok', 'warn', 'error');
+          el.classList.add(state);
+          el.textContent = message || '';
+        }
+      }
+      // Keep the Live-mode tag in sync whenever feed state changes.
+      if (dom.liveStatus) refreshLiveStatus();
+    }
+    function hideFeedStatus() {
+      const el = document.getElementById('feed-status-banner');
+      if (el) el.classList.add('hidden');
+    }
+
+    // ========== ROUTES API ADAPTER ==========
+    // google.maps.routes.Route.computeRoutes (Routes API) replaces the
+    // deprecated DirectionsService. The response shape differs from
+    // DirectionsResult — this adapter normalises it so downstream code
+    // (applySelectedRoute, countRouteAlertIntersections,
+    // drawAlternativePolylines, updateRouteOptionsPanel) keeps working.
+    // JS SDK uses google.maps.TravelMode enum values (DRIVING/TRANSIT/WALKING/
+    // BICYCLING) — NOT the REST API's DRIVE/WALK/BICYCLE.
+    const ROUTES_MODE = {
+      driving:   'DRIVING',
+      transit:   'TRANSIT',
+      walking:   'WALKING',
+      bicycling: 'BICYCLING'
+    };
+    // JS SDK field-mask names (bare, no `routes.` prefix, JS-SDK property
+     // names which differ from the REST API): duration -> durationMillis
+     // (number), polyline.encodedPolyline -> path (LatLngAltitude[]),
+     // navigationInstruction.instructions -> instructions (string).
+    const ROUTES_FIELD_MASK = [
+      'description',
+      'distanceMeters',
+      'durationMillis',
+      'path',
+      'legs'
+    ];
+    // JS SDK route path elements are LatLngAltitude { latitude, longitude,
+    // altitude } — convert to google.maps.LatLng so downstream code
+    // (Polyline.setPath, containsLocation, computeDistanceBetween,
+    // alertRouteFilter.buildRouteWithCumulative) all work unchanged.
+    function routePointToLatLng(p) {
+      if (!p) return null;
+      const lat = typeof p.lat === 'function' ? p.lat() : (p.latitude ?? p.lat);
+      const lng = typeof p.lng === 'function' ? p.lng() : (p.longitude ?? p.lng);
+      return new google.maps.LatLng(lat, lng);
+    }
+    function boundsFromPath(path) {
+      const b = new google.maps.LatLngBounds();
+      for (const p of path) b.extend(p);
+      return b;
+    }
+    // Adapter: convert one Routes API "route" to a legacy-shaped object.
+    // SAFETY: a zero-length or zero-distance route silently breaks every
+    // downstream call (findFirstIndexWithinBuffer never matches, so every
+    // alert looks `off_route`). Validate the Routes API shape and throw
+    // loudly so the caller's catch block can banner "route load failed".
+    function adaptRoute(r) {
+      if (!r) throw new Error('adaptRoute: null/undefined route');
+      const overview_path = (r.path || []).map(routePointToLatLng).filter(Boolean);
+      if (overview_path.length === 0) {
+        throw new Error('adaptRoute: empty overview_path — Routes API returned no geometry');
+      }
+      const bounds = boundsFromPath(overview_path);
+      const legs = (r.legs || []).map(leg => ({
+        distance: { value: leg.distanceMeters || 0 },
+        duration: { value: Math.round((leg.durationMillis || 0) / 1000) },
+        steps: (leg.steps || []).map(step => ({
+          distance: { value: step.distanceMeters || 0 },
+          path: (step.path || []).map(routePointToLatLng).filter(Boolean),
+          instructions: step.instructions || ''
+        }))
+      }));
+      const totalMeters = legs.reduce((sum, l) => sum + (l.distance.value || 0), 0);
+      if (legs.length > 0 && totalMeters === 0) {
+        throw new Error('adaptRoute: zero-distance route — Routes API returned malformed legs');
+      }
+      return { summary: r.description || '', overview_path, bounds, legs };
+    }
+
+    async function runRoutingRequest({ origin, destination, travelMode, alternatives, waypoints }) {
+      if (!google.maps.routes || !google.maps.routes.Route) {
+        throw new Error('Routes library not loaded');
+      }
+      // Routes API JS SDK accepts origin/destination as a LatLng instance
+      // directly (NOT the REST-style `{ location: { latLng: {...} } }` wrapper,
+      // which the SDK rejects with InvalidValueError). Autocomplete returns
+      // { lat, lng, name }; toLat/toLng also handles google.maps.LatLng.
+      const toLatLng = (p) => new google.maps.LatLng(toLat(p), toLng(p));
+      // SAFETY: whitelist the travel mode rather than silently falling back
+      // to DRIVING. A user who picks walking and sees a driving route thinks
+      // they walked it — dangerous.
+      const resolvedMode = ROUTES_MODE[travelMode];
+      if (!resolvedMode) {
+        throw new Error('Unknown travel mode: ' + travelMode);
+      }
+      // Note: Routes API JS SDK does not accept `languageCode` / `units`
+      // (rejected with InvalidValueError). They are REST-only fields.
+      const request = {
+        origin:      toLatLng(origin),
+        destination: toLatLng(destination),
+        travelMode:  resolvedMode,
+        computeAlternativeRoutes: !!alternatives,
+        fields: ROUTES_FIELD_MASK
+      };
+      if (resolvedMode === 'DRIVING') {
+        request.routingPreference = 'TRAFFIC_AWARE';
+      }
+      if (Array.isArray(waypoints) && waypoints.length > 0) {
+        request.intermediates = waypoints.map(wp => {
+          const p = wp.location || wp;
+          return { location: { lat: toLat(p), lng: toLng(p) }, via: true };
+        });
+      }
+      const response = await google.maps.routes.Route.computeRoutes(request);
+      const routes = (response && response.routes) || [];
+      if (routes.length === 0) {
+        const err = new Error('ZERO_RESULTS: No route could be found.');
+        err.code = 'ZERO_RESULTS';
+        throw err;
+      }
+      return { routes: routes.map(adaptRoute) };
+    }
+
+    // Manual main-route polyline (replaces DirectionsRenderer).
+    function renderMainRoute(route) {
+      if (!route || !route.overview_path || route.overview_path.length === 0) return;
+      if (!mainRoutePolyline) {
+        mainRoutePolyline = new google.maps.Polyline({
+          map: map,
+          strokeColor: '#1a73e8',
+          strokeWeight: 7,
+          strokeOpacity: 1.0,
+          zIndex: 50
+        });
+      }
+      mainRoutePolyline.setPath(route.overview_path);
+      if (!mainRoutePolyline.getMap()) mainRoutePolyline.setMap(map);
+    }
+    function clearMainRoute() {
+      if (mainRoutePolyline) {
+        mainRoutePolyline.setPath([]);
+        mainRoutePolyline.setMap(null);
+      }
+    }
+
+    // After migrating markers to AdvancedMarkerElement, `.position` can be
+    // either a google.maps.LatLng (with callable .lat()/.lng()) OR a plain
+    // LatLngLiteral ({lat, lng}). These helpers paper over the difference
+    // so call sites don't have to branch.
+    function toLat(p) {
+      if (p == null) return NaN;
+      return typeof p.lat === 'function' ? p.lat() : p.lat;
+    }
+    function toLng(p) {
+      if (p == null) return NaN;
+      return typeof p.lng === 'function' ? p.lng() : p.lng;
+    }
+
+    // ========== DIRECTIONS PANEL GATE ==========
+    // Travel-mode tabs, the Directions button, and Send-to-Phone are only
+    // useful once the user has picked BOTH a From and a To. Until then the
+    // whole action area is visually disabled and the swap button is hidden.
+    // This single function is called from every place that can change
+    // currentOrigin or currentDestination: autocomplete callbacks, demo-route
+    // handler, and the swap handler itself.
+    function updateDirectionsGate() {
+      const both = !!(currentOrigin && currentDestination);
+      const any  = !!(currentOrigin || currentDestination);
+
+      // Whole containers hide/show — avoids leaving greyed-out controls
+      // taking up space when they aren't usable (UX-006).
+      // Tabs require BOTH a filled origin/destination AND an explicit
+      // Directions request (UX-008) — they don't appear just because the
+      // fields are filled.
+      const tabsWrap = document.getElementById('travel-mode-tabs');
+      if (tabsWrap) tabsWrap.hidden = !(both && directionsRequested);
+
+      const primary = document.querySelector('.primary-actions');
+      if (primary) primary.hidden = !both;
+
+      const swap = document.getElementById('btn-swap-route');
+      if (swap) swap.hidden = !both;
+
+      // Demo route is a Simulation-only shortcut. Hide in Live mode (where
+      // real GPS drives the route) and hide once the user has picked real
+      // From/To so the UI focuses on their chosen route.
+      const demo = document.getElementById('btn-demo-route');
+      if (demo) demo.hidden = both || currentMode === 'live';
+
+      // Clear link — show as soon as either field has a selection (UX-013).
+      const clearBtn = document.getElementById('btn-clear-route');
+      if (clearBtn) clearBtn.hidden = !any;
+    }
+
+    // Reset both endpoints, wipe any rendered route, and return the
+    // directions panel to its initial "pick a From and To" state.
+    function clearRoute() {
+      currentOrigin = null;
+      currentDestination = null;
+      directionsRequested = false;
+      useHardcodedWaypoints = false;
+
+      // Wipe input text (handles both legacy <input> and PlaceAutocompleteElement)
+      const fromInput = document.getElementById('input-from');
+      const toInput   = document.getElementById('input-to');
+      if (fromInput) setAutocompleteText(fromInput, '');
+      if (toInput)   setAutocompleteText(toInput, '');
+
+      // Tear down the rendered route + markers
+      clearMainRoute();
+      if (originMarker) { originMarker.map = null; originMarker = null; }
+      if (destMarker)   { destMarker.map = null;   destMarker = null; }
+      if (typeof clearAltRoutePolylines === 'function') clearAltRoutePolylines();
+
+      // Reset route state
+      routePath.length = 0;
+      alternativeRoutes = [];
+      selectedRouteIndex = 0;
+      currentRouteMeta = null;
+
+      // Collapse the route-options card + route-info card
+      const panel = document.getElementById('route-options');
+      if (panel) { panel.innerHTML = ''; panel.classList.remove('visible'); }
+      const routeInfo = document.getElementById('route-info');
+      if (routeInfo) routeInfo.classList.remove('visible');
+
+      // Simulation cannot run without a route
+      if (typeof setSimControlsEnabled === 'function') setSimControlsEnabled(false);
+
+      updateDirectionsGate();
+    }
+
+    // ========== SEND-TO-PHONE ==========
+    // Builds a Google Maps deep link for the current route + opens a modal
+    // with a QR code, copy button, SMS/email fallbacks. The link uses the
+    // /maps/dir/?api=1 URL spec (stable, documented, no Maps API key needed
+    // when opened on a phone).
+    function buildCurrentShareUrl() {
+      if (!window.MapsShareLink || !currentOrigin || !currentDestination) return null;
+      const wps = (useHardcodedWaypoints && currentTravelMode === 'driving')
+        ? DEMO_WAYPOINTS.slice()
+        : [];
+      return window.MapsShareLink.buildDirectionsUrl({
+        origin: { lat: currentOrigin.lat, lng: currentOrigin.lng },
+        destination: { lat: currentDestination.lat, lng: currentDestination.lng },
+        travelMode: currentTravelMode,
+        waypoints: wps
+      });
+    }
+
+    function openShareModal() {
+      const url = buildCurrentShareUrl();
+      if (!url) {
+        showToast('Load a route first', true);
+        return;
+      }
+      document.getElementById('share-url-text').textContent = url;
+      const qrImg = document.getElementById('share-qr');
+      // Public QR service — if blocked, the modal degrades to URL + copy.
+      qrImg.classList.remove('broken');
+      qrImg.onerror = () => { qrImg.removeAttribute('src'); qrImg.classList.add('broken'); };
+      qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+
+      const smsBody = 'Directions: ' + url;
+      document.getElementById('share-sms-link').href = window.MapsShareLink.buildSmsUrl(smsBody);
+      document.getElementById('share-mail-link').href = window.MapsShareLink.buildMailtoUrl('Directions', smsBody);
+
+      document.getElementById('share-overlay').classList.add('visible');
+    }
+
+    function closeShareModal() {
+      document.getElementById('share-overlay').classList.remove('visible');
+    }
+
+    function copyShareUrl() {
+      const url = document.getElementById('share-url-text').textContent;
+      if (!url) return;
+      const onSuccess = () => showToast('Link copied', false, 1500);
+      const onFailure = () => showToast('Copy failed — select the link and copy manually', true, 2500);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(onSuccess, () => {
+          // Clipboard API failed (non-HTTPS / permissions-denied) — try execCommand.
+          if (fallbackCopy(url)) onSuccess(); else onFailure();
+        });
+      } else {
+        if (fallbackCopy(url)) onSuccess(); else onFailure();
+      }
+    }
+    // Returns true iff the copy actually succeeded. Browsers return false from
+    // execCommand('copy') when it's blocked (e.g. not triggered by user gesture
+    // or doc.execCommand is disabled in the sandbox).
+    function fallbackCopy(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      let ok = false;
+      try { ok = !!document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+
+    // Re-evaluate every currently-active alert against the (possibly new) route.
+    // Called when the driver picks a new From/To and `currentRouteMeta` is
+    // rebuilt. Alerts that are no longer relevant are fully dismissed;
+    // alerts whose city list narrowed have their off-route cities' polygons
+    // cleared from the map and the banner refreshed.
+    function reEvaluateActiveAlertsForRoute() {
+      if (!global_hasAlertFilter() || !currentRouteMeta) return;
+      for (const entry of [...activeAlerts]) {
+        const v = window.AlertRouteFilter.filterAlertForRoute({
+          alert: { cities: entry.cities },
+          polygonIndex: polygonIndex,
+          route: currentRouteMeta,
+          driver: currentDriverState(),
+          bufferMeters: 3000,
+          shelterSecondsFor: window.ShelterTime.shelterSecondsFor
+        });
+        if (!v.relevant) {
+          console.log(`[alert-filter] dismissing active alert (${entry.cities.join(', ')}) — no longer on route`);
+          clearAlertEntry(entry);
+          continue;
+        }
+        // Narrow: drop polygons for cities that are no longer relevant.
+        if (v.relevantCities.length < entry.cities.length) {
+          const keepSet = new Set(v.relevantCities);
+          const keptPolys = [];
+          entry.polygons.forEach((poly, i) => {
+            const city = entry.cities[i];
+            if (keepSet.has(city)) {
+              keptPolys.push(poly);
+            } else {
+              poly.setMap(null);
+            }
+          });
+          entry.polygons = keptPolys;
+          entry.cities = v.relevantCities;
+          console.log(`[alert-filter] narrowed active alert to: ${entry.cities.join(', ')}`);
+          // Refresh banner text if it's still showing this alert
+          const banner = document.getElementById('alert-text');
+          if (banner) {
+            banner.textContent = `⚠️ Alert: ${entry.cities.join(', ')}`;
+          }
+        }
+      }
+    }
+
+    // ========== ROUTE INFO CARD ==========
+    function formatDuration(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.round((seconds % 3600) / 60);
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function formatDistance(meters) {
+      if (meters < 1000) return `${Math.round(meters)} m`;
+      return `${(meters / 1000).toFixed(1)} km`;
+    }
+
+    function updateRouteInfoCard() {
+      document.getElementById('ri-distance').textContent = formatDistance(routeTotalMeters);
+      document.getElementById('ri-duration').textContent = formatDuration(routeTotalSeconds);
+      const eta = new Date(Date.now() + routeTotalSeconds * 1000);
+      document.getElementById('ri-eta').textContent = eta.toLocaleTimeString([], {
+        hour: '2-digit', minute: '2-digit'
+      });
+      document.getElementById('ri-remaining-row').hidden = true;
+      document.getElementById('route-info').classList.add('visible');
+    }
+
+    function updateRouteInfoRemaining(progress) {
+      // progress is 0..1
+      const remainingMeters = routeTotalMeters * (1 - progress);
+      const remainingSeconds = routeTotalSeconds * (1 - progress);
+      dom.riRemaining.textContent =
+        `${formatDistance(remainingMeters)} / ${formatDuration(remainingSeconds)}`;
+      dom.riRemainingRow.hidden = false;
+
+      // Update ETA based on actual start time + remaining time from sim
+      if (routeStartTime) {
+        const eta = new Date(Date.now() + remainingSeconds * 1000);
+        dom.riEta.textContent = eta.toLocaleTimeString([], {
+          hour: '2-digit', minute: '2-digit'
+        });
+      }
+    }
+
+    // ========== DRIVER MARKER (AdvancedMarkerElement content) ==========
+    let driverHeading = 0; // degrees, 0 = North (clockwise for CSS rotate)
+
+    // Build the HTML that AdvancedMarkerElement renders for the driver.
+    // A simple SVG arrow that inherits the `color` from the wrapper div —
+    // so colour changes (danger ↔ safe) are a class toggle, rotation is
+    // a CSS transform.
+    function makeDriverContent() {
+      const el = document.createElement('div');
+      el.className = 'driver-marker';
+      el.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+        '<path d="M12 2 L20 22 L12 17 L4 22 Z" ' +
+        'fill="currentColor" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>' +
+        '</svg>';
+      return el;
+    }
+
+    function updateDriverContent(el, isDanger) {
+      if (!el) return;
+      el.classList.toggle('danger', !!isDanger);
+      el.style.transform = `rotate(${driverHeading}deg)`;
+    }
+
+    // ========== DANGER ZONE DETECTION ==========
+    function checkDangerZone(position) {
+      if (!position || activeAlerts.length === 0) {
+        if (insideDangerZone) {
+          insideDangerZone = false;
+          updateDangerVisuals(false);
+        }
+        return;
+      }
+
+      let isInside = false;
+      for (const alert of activeAlerts) {
+        for (const poly of alert.polygons) {
+          if (google.maps.geometry.poly.containsLocation(position, poly)) {
+            isInside = true;
+            break;
+          }
+        }
+        if (isInside) break;
+      }
+
+      if (isInside && !insideDangerZone) {
+        insideDangerZone = true;
+        updateDangerVisuals(true);
+      } else if (!isInside && insideDangerZone) {
+        insideDangerZone = false;
+        updateDangerVisuals(false);
+      }
+    }
+
+    function updateDangerVisuals(isDanger) {
+      if (isDanger) {
+        dom.alertBanner.classList.add('inside');
+        dom.map.classList.add('danger-glow');
+        dom.instructionsPanel.classList.add('visible');
+        if (driverMarker) {
+          updateDriverContent(driverMarker._content, true);
+        }
+        // Trigger escape mode with nearest-shelter fallback
+        triggerEscapeMode();
+      } else {
+        dom.alertBanner.classList.remove('inside');
+        dom.map.classList.remove('danger-glow');
+        dom.instructionsPanel.classList.remove('visible');
+        if (driverMarker) {
+          updateDriverContent(driverMarker._content, false);
+        }
+        exitEscapeMode();
+      }
+      updateDangerStatus(isDanger);
+    }
+
+    function updateDangerStatus(isDanger) {
+      if (isDanger) {
+        dom.dangerIndicator.textContent = '⛔ IN DANGER ZONE';
+        dom.dangerIndicator.className = 'danger';
+        dom.statDanger.textContent = 'IN DANGER ZONE';
+        dom.statDanger.className = 'danger-status danger';
+      } else {
+        dom.dangerIndicator.textContent = '✓ SAFE';
+        dom.dangerIndicator.className = 'safe';
+        dom.statDanger.textContent = 'SAFE';
+        dom.statDanger.className = 'danger-status safe';
+      }
+    }
+
+    // ========== DRIVING SIMULATION ==========
+    function showMessage(icon, title, body, btnText, onClose, cssClass) {
+      const overlay = document.getElementById('message-overlay');
+      const box = document.getElementById('message-box');
+      document.getElementById('msg-icon').textContent = icon;
+      document.getElementById('msg-title').textContent = title;
+      document.getElementById('msg-body').innerHTML = body;
+      document.getElementById('msg-btn').textContent = btnText;
+      box.className = cssClass || '';
+      overlay.classList.add('visible');
+
+      const btn = document.getElementById('msg-btn');
+      const handler = () => {
+        overlay.classList.remove('visible');
+        btn.removeEventListener('click', handler);
+        if (onClose) onClose();
+      };
+      btn.addEventListener('click', handler);
+    }
+
+    function startSimulation() {
+      if (routePath.length === 0) return;
+      if (gpsWatchId !== null) {
+        showToast('Disable real GPS first to run simulation', true);
+        return;
+      }
+
+      // Show safe drive message first
+      showMessage(
+        '🛡️',
+        'Have a Safe Drive!',
+        'Remember Pikud HaOref instructions:<br>During an alert — pull over, exit the vehicle, lie on the ground and protect your head.<br><br>Stay alert and drive safely.',
+        'Start Drive',
+        beginDriving
+      );
+    }
+
+    function beginDriving() {
+      currentIndex = 0;
+      triggeredMockAlerts.clear();
+      isRunning = true;
+      routeStartTime = new Date();
+
+      // Clear any existing alerts
+      [...activeAlerts].forEach(a => clearAlertEntry(a));
+
+      // Create driver marker - initial heading from first two route points
+      driverHeading = routePath.length > 1
+        ? google.maps.geometry.spherical.computeHeading(routePath[0], routePath[1])
+        : 0;
+      if (driverMarker) driverMarker.map = null;
+      const driverContent = makeDriverContent();
+      updateDriverContent(driverContent, false);
+      driverMarker = new google.maps.marker.AdvancedMarkerElement({
+        position: routePath[0],
+        map: map,
+        zIndex: 10,
+        content: driverContent,
+        title: 'You'
+      });
+      driverMarker._content = driverContent;  // so simStep can toggle danger class
+
+      // Update button
+      const btn = document.getElementById('btn-start');
+      btn.textContent = 'Stop Simulation';
+      btn.classList.add('running');
+
+      // Start animation loop
+      simInterval = setInterval(simStep, 50);
+    }
+
+    function stopSimulation() {
+      isRunning = false;
+      if (simInterval) {
+        clearInterval(simInterval);
+        simInterval = null;
+      }
+
+      const btn = document.getElementById('btn-start');
+      btn.textContent = 'Start Simulation';
+      btn.classList.remove('running');
+    }
+
+    function simStep() {
+      // SAFETY: simStep runs at 20Hz via setInterval. If it throws, the
+      // interval continues firing on a broken state OR the driver marker
+      // silently stops advancing. Wrap the whole loop so any throw stops
+      // the sim loudly with a banner — never silently freeze the map.
+      try {
+        simStepBody();
+      } catch (e) {
+        console.error('[sim] simStep threw, halting simulation:', e);
+        try { stopSimulation(); } catch (_) { /* best-effort */ }
+        setFeedStatus('error', 'SIMULATION HALTED — internal error: ' + (e && e.message ? e.message : e));
+        showToast('⚠️ Simulation halted — ' + (e && e.message ? e.message : 'internal error'), true, 8000);
+      }
+    }
+
+    function simStepBody() {
+      if (currentIndex >= routePath.length) {
+        stopSimulation();
+        // Show 0 remaining on arrival
+        updateRouteInfoRemaining(1);
+        document.getElementById('instructions-panel').classList.remove('visible');
+        showMessage(
+          '🎉',
+          'You Arrived Safely!',
+          'You have arrived safely to your destination.<br>Stay safe and continue to follow Pikud HaOref instructions at all times.',
+          'Done',
+          null,
+          'arrived'
+        );
+        return;
+      }
+
+      const pos = routePath[currentIndex];
+      driverMarker.position = pos;
+
+      // Update heading based on direction of travel
+      if (currentIndex > 0 && currentIndex < routePath.length) {
+        const prev = routePath[Math.max(0, currentIndex - speed)];
+        driverHeading = google.maps.geometry.spherical.computeHeading(prev, pos);
+        updateDriverContent(driverMarker._content, insideDangerZone);
+      }
+
+      // Pan map to follow (every 10 steps to reduce jitter)
+      if (currentIndex % 10 === 0) {
+        map.panTo(pos);
+      }
+
+      // Check mock alert triggers
+      const progress = currentIndex / routePath.length;
+      for (const mock of MOCK_ALERTS) {
+        const key = mock.triggerAtPercent.toString();
+        if (!triggeredMockAlerts.has(key) && progress >= mock.triggerAtPercent) {
+          triggeredMockAlerts.add(key);
+          // Route every mock alert through the same funnel the real feed
+          // uses — this is how simulation stays a valid test harness.
+          processIncomingAlert(mock.alert, mock.durationMs, { source: 'mock' });
+        }
+      }
+
+      // Check danger zone — throttled to 500ms (motion still updates at 20Hz).
+      const nowMs = Date.now();
+      if (nowMs - lastDangerCheckAt >= 500) {
+        lastDangerCheckAt = nowMs;
+        checkDangerZone(pos);
+      }
+
+      // Update route info remaining
+      updateRouteInfoRemaining(progress);
+
+      // Update status bar (cached refs — this runs at 20Hz)
+      const pct = (progress * 100).toFixed(1);
+      dom.statProgress.textContent = pct + '%';
+      dom.progressFill.style.width = pct + '%';
+      dom.statPos.textContent = `${toLat(pos).toFixed(4)}, ${toLng(pos).toFixed(4)}`;
+
+      currentIndex += speed;
+    }
+
+    // ========== TOAST ==========
+    function showToast(msg, isError = false, durationMs = 3000) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'visible' + (isError ? ' error' : '');
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => t.classList.remove('visible'), durationMs);
+    }
+
+    // ========== GEOLOCATION ==========
+    function addMyLocationButton() {
+      const btn = document.createElement('button');
+      btn.textContent = '📍';
+      btn.title = 'My location';
+      btn.style.cssText = `
+        background: white;
+        border: 2px solid #ccc;
+        width: 40px; height: 40px;
+        border-radius: 50%;
+        cursor: pointer;
+        font-size: 18px;
+        margin: 10px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      `;
+      btn.addEventListener('click', () => {
+        if (!navigator.geolocation) {
+          showToast('Geolocation not supported by this browser', true);
+          return;
+        }
+        btn.textContent = '⏳';
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            btn.textContent = '📍';
+            const latLng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            map.setCenter(latLng);
+            map.setZoom(15);
+            showToast(`Location found (±${Math.round(pos.coords.accuracy)}m)`);
+          },
+          (err) => {
+            btn.textContent = '📍';
+            showToast(`Location error: ${err.message}`, true);
+          },
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      });
+      map.controls[google.maps.ControlPosition.RIGHT_BOTTOM].push(btn);
+    }
+
+    function startRealGPS() {
+      if (!navigator.geolocation) {
+        showToast('Geolocation not supported', true);
+        return;
+      }
+
+      // Stop simulation if running
+      if (isRunning) stopSimulation();
+
+      // Disable start button while GPS is active
+      document.getElementById('btn-start').disabled = true;
+
+      gpsUpdateCount = 0;
+      showToast('Requesting location permission...');
+
+      gpsWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const latLng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          const gLatLng = new google.maps.LatLng(latLng.lat, latLng.lng);
+
+          // Create or move driver marker (AdvancedMarkerElement + custom content)
+          if (!driverMarker) {
+            driverHeading = pos.coords.heading || 0;
+            const driverContent = makeDriverContent();
+            updateDriverContent(driverContent, false);
+            driverMarker = new google.maps.marker.AdvancedMarkerElement({
+              position: gLatLng,
+              map: map,
+              zIndex: 10,
+              content: driverContent,
+              title: 'You (real GPS)'
+            });
+            driverMarker._content = driverContent;
+          } else {
+            // Compute heading from previous position (if device doesn't supply it)
+            const prev = driverMarker.position;
+            if (pos.coords.heading != null && !isNaN(pos.coords.heading)) {
+              driverHeading = pos.coords.heading;
+            } else if (prev) {
+              const d = google.maps.geometry.spherical.computeDistanceBetween(prev, gLatLng);
+              if (d > 2) { // only update heading if moved > 2m
+                driverHeading = google.maps.geometry.spherical.computeHeading(prev, gLatLng);
+              }
+            }
+            driverMarker.position = gLatLng;
+            updateDriverContent(driverMarker._content, insideDangerZone);
+          }
+
+          // Draw / update accuracy circle
+          if (!gpsAccuracyCircle) {
+            gpsAccuracyCircle = new google.maps.Circle({
+              map: map,
+              center: gLatLng,
+              radius: pos.coords.accuracy,
+              fillColor: '#4285F4',
+              fillOpacity: 0.12,
+              strokeColor: '#4285F4',
+              strokeOpacity: 0.4,
+              strokeWeight: 1,
+              zIndex: 1
+            });
+          } else {
+            gpsAccuracyCircle.setCenter(gLatLng);
+            gpsAccuracyCircle.setRadius(pos.coords.accuracy);
+          }
+
+          // Center on first fix
+          if (gpsUpdateCount === 0) {
+            map.setCenter(gLatLng);
+            map.setZoom(15);
+            showToast(`GPS locked (±${Math.round(pos.coords.accuracy)}m)`);
+          } else if (gpsUpdateCount % 5 === 0) {
+            map.panTo(gLatLng);
+          }
+          gpsUpdateCount++;
+
+          // Update status bar position
+          document.getElementById('stat-pos').textContent =
+            `${latLng.lat.toFixed(4)}, ${latLng.lng.toFixed(4)}`;
+
+          // Check danger zone against real position
+          checkDangerZone(gLatLng);
+        },
+        (err) => {
+          showToast(`GPS error: ${err.message}`, true);
+          stopRealGPS();
+          if (currentMode === 'live') refreshLiveStatus();
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    }
+
+    function stopRealGPS() {
+      if (gpsWatchId !== null) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+        gpsWatchId = null;
+      }
+      if (gpsAccuracyCircle) {
+        gpsAccuracyCircle.setMap(null);
+        gpsAccuracyCircle = null;
+      }
+      document.getElementById('btn-start').disabled = false;
+    }
+
+    // ========== REAL ALERT POLLING ==========
+    // Single source: https://api.tzevaadom.co.il/notifications via a single
+    // CORS proxy. NO silent fallback chain — if the proxy fails, the user
+    // MUST see a banner (this is a life-safety feed). Swap the proxy here
+    // if the public one is rate-limited; do not rotate silently.
+    const ALERT_ENDPOINT = 'https://api.tzevaadom.co.il/notifications';
+    const ALERT_PROXY = u => 'https://corsproxy.io/?' + encodeURIComponent(u);
+
+    async function fetchAlertsJson() {
+      const resp = await fetch(ALERT_PROXY(ALERT_ENDPOINT));
+      if (!resp.ok) throw new Error('HTTP ' + resp.status + ' from proxy');
+      return resp.json();
+    }
+
+    // Self-scheduling poller with exponential backoff so a geo-blocked or
+    // offline feed does not hammer the endpoint every 3 seconds and spam
+    // the console. On success: 3s cadence. On failure: 3s → 10s → 30s (cap).
+    // console.warn is throttled to failure #1 and #5 only; the toast fires
+    // exactly once at #5.
+    let realAlertTimer = null;
+    let realPollFailuresInARow = 0;
+    const POLL_BASE_MS = 3000;
+    const POLL_MAX_MS  = 30000;
+
+    function nextPollDelay(failures) {
+      if (failures < 2) return POLL_BASE_MS;
+      if (failures < 4) return 10000;
+      return POLL_MAX_MS;
+    }
+
+    function startRealAlertPolling() {
+      if (realAlertTimer) return;
+      console.log('Starting real Pikud HaOref alert polling...');
+      realPollFailuresInARow = 0;
+
+      let stopped = false;
+      const tick = async () => {
+        // Mode guard — setMode is the normal stop path, this is defense-in-depth.
+        if (stopped || currentMode !== 'live') { realAlertTimer = null; return; }
+
+        let delay = POLL_BASE_MS;
+        try {
+          // Response shape after unwrap:
+          //   [{ notificationId, time (unix seconds), threat, isDrill, cities: string[] }]
+          // Empty array `[]` means no active alerts.
+          const list = await fetchAlertsJson();
+          realPollFailuresInARow = 0;
+          setFeedStatus('ok', 'Pikud HaOref feed: connected');
+
+          if (Array.isArray(list) && list.length > 0) {
+            const nowSec = Date.now() / 1000;
+            // Only surface alerts from the last 90s (our own alert lifetime)
+            // and ignore drills. Dedup by notificationId is handled inside
+            // processIncomingAlert over a 2-minute window.
+            const fresh = list.filter(n =>
+              n && !n.isDrill && Array.isArray(n.cities) && n.cities.length > 0
+              && (typeof n.time !== 'number' || (nowSec - n.time) < 90)
+            );
+            for (const n of fresh) {
+              console.log('REAL ALERT:', n);
+              processIncomingAlert(
+                { id: n.notificationId || ('tzeva-' + (n.time || Date.now())),
+                  type: 'Missiles',
+                  cities: n.cities },
+                90000,  // 90s alert lifetime
+                { source: 'live' }
+              );
+            }
+          }
+        } catch (e) {
+          realPollFailuresInARow++;
+          delay = nextPollDelay(realPollFailuresInARow);
+
+          // Log on #1 and on the threshold boundary (#5) only — stops spam.
+          if (realPollFailuresInARow === 1 || realPollFailuresInARow === 5) {
+            console.warn('Real alert poll failed:',
+              e.message || e,
+              `(retrying in ${Math.round(delay / 1000)}s, failure #${realPollFailuresInARow})`);
+          }
+          // LOUD failure — life-safety: banner stays until feed recovers.
+          setFeedStatus('error',
+            'ALERT FEED UNREACHABLE — alerts may be missed. ' +
+            `(Retrying in ${Math.round(delay / 1000)}s, failure #${realPollFailuresInARow})`);
+        }
+
+        // Re-check the guard before scheduling — prevents a pre-stop tick
+        // that finished its fetch from resurrecting the timer handle.
+        if (stopped || currentMode !== 'live') { realAlertTimer = null; return; }
+        realAlertTimer = setTimeout(tick, delay);
+      };
+
+      // Expose the stop flag to stopRealAlertPolling via the outer closure.
+      startRealAlertPolling._stop = () => { stopped = true; };
+      tick();
+    }
+
+    function stopRealAlertPolling() {
+      if (startRealAlertPolling._stop) startRealAlertPolling._stop();
+      if (realAlertTimer) {
+        clearTimeout(realAlertTimer);
+        realAlertTimer = null;
+        console.log('Stopped real alert polling');
+      }
+    }
+
+    // ========== UI CONTROLS ==========
+    // ========== AUTOCOMPLETE TEXT HELPERS ==========
+    // The legacy Autocomplete attaches to a plain <input> — .value + an
+    // 'input' event are enough. The new PlaceAutocompleteElement is a web
+    // component whose visible text lives in a nested <input> inside its
+    // (open) shadow root; setting .value on the outer element doesn't
+    // update that nested input, which is why the widget's clear-X icon
+    // stays attached to the wrong field after a swap. These helpers walk
+    // to the correct inner <input> in both cases.
+    function getAutocompleteInnerInput(el) {
+      if (!el) return null;
+      if (el.tagName === 'INPUT') return el;
+      // Web component: open shadow root contains the real <input>
+      if (el.shadowRoot) {
+        const inner = el.shadowRoot.querySelector('input');
+        if (inner) return inner;
+      }
+      // Fallback: the element itself may proxy .value correctly
+      return el;
+    }
+    function readAutocompleteText(el) {
+      const target = getAutocompleteInnerInput(el);
+      return (target && target.value) || '';
+    }
+    function setAutocompleteText(el, text) {
+      const target = getAutocompleteInnerInput(el);
+      if (!target) return;
+      target.value = text;
+      // Fire native events so the widget updates its chrome (clear-X icon,
+      // suggestions dropdown). Dispatching `input` on the inner <input>
+      // mirrors a real keystroke; `change` closes any open suggestion list.
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function setupAutocomplete() {
+      console.log('[Autocomplete] Checking Places library...');
+
+      if (!google.maps.places) {
+        console.error('[Autocomplete] Places library not loaded');
+        showToast('Places library failed to load', true, 8000);
+        return;
+      }
+
+      // SAFETY: single autocomplete implementation — no silent fallback
+      // to the deprecated legacy API. If the new PlaceAutocompleteElement
+      // is missing (misconfigured Google Cloud project), fail loudly.
+      if (!google.maps.places.PlaceAutocompleteElement) {
+        console.error('[Autocomplete] new PlaceAutocompleteElement unavailable');
+        setFeedStatus('error',
+          'ADDRESS SEARCH UNAVAILABLE — enable the Places API (New) in your Google Cloud project.');
+        return;
+      }
+      setupAutocompleteNew();
+      console.log('[Autocomplete] Using new PlaceAutocompleteElement (Places API New)');
+    }
+
+    function setupAutocompleteNew() {
+      const fromOldInput = document.getElementById('input-from');
+      const toOldInput = document.getElementById('input-to');
+
+      const fromEl = new google.maps.places.PlaceAutocompleteElement({
+        includedRegionCodes: ['il']
+      });
+      const toEl = new google.maps.places.PlaceAutocompleteElement({
+        includedRegionCodes: ['il']
+      });
+
+      fromEl.id = 'input-from';
+      toEl.id = 'input-to';
+      fromEl.className = 'gmp-autocomplete';
+      toEl.className = 'gmp-autocomplete';
+
+      fromOldInput.parentNode.replaceChild(fromEl, fromOldInput);
+      toOldInput.parentNode.replaceChild(toEl, toOldInput);
+
+      fromEl.addEventListener('gmp-select', async (event) => {
+        try {
+          const place = event.placePrediction.toPlace();
+          await place.fetchFields({
+            fields: ['location', 'displayName', 'formattedAddress']
+          });
+          currentOrigin = {
+            lat: place.location.lat(),
+            lng: place.location.lng(),
+            name: place.displayName || place.formattedAddress || 'Origin'
+          };
+          console.log('[Autocomplete:NEW] From set:', currentOrigin);
+          directionsRequested = false;  // new origin → require re-request
+          updateDirectionsGate();
+        } catch (e) {
+          console.error('[Autocomplete:NEW] Fetch From error:', e);
+          showToast('Could not resolve the origin — try a different address', true, 5000);
+        }
+      });
+
+      toEl.addEventListener('gmp-select', async (event) => {
+        try {
+          const place = event.placePrediction.toPlace();
+          await place.fetchFields({
+            fields: ['location', 'displayName', 'formattedAddress']
+          });
+          currentDestination = {
+            lat: place.location.lat(),
+            lng: place.location.lng(),
+            name: place.displayName || place.formattedAddress || 'Destination'
+          };
+          console.log('[Autocomplete:NEW] To set:', currentDestination);
+          directionsRequested = false;  // new destination → require re-request
+          updateDirectionsGate();
+        } catch (e) {
+          console.error('[Autocomplete:NEW] Fetch To error:', e);
+          showToast('Could not resolve the destination — try a different address', true, 5000);
+        }
+      });
+    }
+
+    // (Removed setupAutocompleteLegacy — deprecated legacy Autocomplete
+    //  fallback deleted per SAFETY-NO-FALLBACKS-001. Only the new
+    //  PlaceAutocompleteElement is supported.)
+
+    // ========== MODE SWITCHING ==========
+    let currentMode = 'simulation'; // 'simulation' | 'live'
+
+    function setMode(mode) {
+      if (mode === currentMode) return;
+
+      // Stop anything running from the old mode
+      if (isRunning) stopSimulation();
+      if (gpsWatchId !== null) stopRealGPS();
+      if (realAlertTimer) stopRealAlertPolling();
+      // Traffic stays on for both modes (UX-004 — no toggle).
+      if (trafficLayer) trafficLayer.setMap(map);
+
+      currentMode = mode;
+      document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+      });
+      dom.simControls.hidden = mode !== 'simulation';
+      dom.liveControls.hidden = mode !== 'live';
+
+      // Demo button visibility depends on currentMode (UX-014) — refresh.
+      updateDirectionsGate();
+
+      // Live mode auto-enables GPS + real API + traffic
+      if (mode === 'live') {
+        enterLiveMode();
+      }
+    }
+
+    function enterLiveMode() {
+      // Preserve feedState if a prior Live session left it 'on' — otherwise amber.
+      renderLiveStatus({ gps: 'starting', real: 'starting', feed: feedState === 'on' ? 'on' : 'starting', traffic: 'on' });
+
+      // 1. Auto-enable live traffic
+      if (trafficLayer) trafficLayer.setMap(map);
+
+      // 2. Auto-enable real GPS tracking
+      startRealGPS();
+
+      // 3. Auto-enable real Pikud HaOref API polling
+      startRealAlertPolling();
+
+      // Render the final status after starting (GPS status depends on permission grant)
+      setTimeout(refreshLiveStatus, 1500);
+    }
+
+    function renderLiveStatus(s) {
+      if (!dom.liveStatus) return;
+      const tag = (label, state) => {
+        const cls = state === 'on' ? '' : state === 'starting' ? ' starting' : ' off';
+        return `<span class="lsl-item${cls}">${label}</span>`;
+      };
+      dom.liveStatus.innerHTML =
+        tag('GPS tracking', s.gps) +
+        tag('Real alerts', s.real) +
+        tag('Pikud HaOref feed', s.feed || feedState) +
+        tag('Live traffic', s.traffic);
+    }
+    // Reads current globals and rebuilds the Live-mode tag strip. Called
+    // whenever GPS/polling/feed state changes so the tags stay in sync.
+    function refreshLiveStatus() {
+      renderLiveStatus({
+        gps:     gpsWatchId !== null ? 'on' : 'off',
+        real:    realAlertTimer !== null ? 'on' : 'off',
+        feed:    feedState,
+        traffic: 'on'
+      });
+    }
+
+    function setupControls() {
+      // Mode toggle
+      document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => setMode(btn.dataset.mode));
+      });
+
+      // From/To Autocomplete
+      setupAutocomplete();
+
+      // Swap origin <-> destination (Google-Maps pattern). Re-routes if a
+       // route is active; otherwise just swaps the input values.
+      const swapBtn = document.getElementById('btn-swap-route');
+      if (swapBtn) {
+        swapBtn.addEventListener('click', async () => {
+          const fromInput = document.getElementById('input-from');
+          const toInput = document.getElementById('input-to');
+          if (fromInput && toInput) {
+            const fv = readAutocompleteText(fromInput);
+            const tv = readAutocompleteText(toInput);
+            setAutocompleteText(fromInput, tv);
+            setAutocompleteText(toInput, fv);
+          }
+          if (currentOrigin && currentDestination) {
+            const o = currentOrigin, d = currentDestination;
+            currentOrigin = d; currentDestination = o;
+            useHardcodedWaypoints = false;
+            directionsRequested = true;        // swap loads a new route (UX-008)
+            updateDirectionsGate();
+            await loadRoute();
+            showToast('Swapped origin and destination');
+          }
+        });
+      }
+
+      // Travel mode tabs — car (driving) is the default. Defensive: reset the
+      // active class on load in case the HTML was edited to start elsewhere.
+      const tabs = document.querySelectorAll('#travel-mode-tabs .tm-btn');
+      tabs.forEach(t => t.classList.toggle('active', t.dataset.mode === currentTravelMode));
+      tabs.forEach(tab => {
+        tab.addEventListener('click', async () => {
+          const mode = tab.dataset.mode;
+          if (mode === currentTravelMode) return;
+          currentTravelMode = mode;
+          tabs.forEach(t => t.classList.toggle('active', t === tab));
+          if (currentOrigin && currentDestination) {
+            // Re-route with new mode. Transit/walk/bike never use the hardcoded waypoints.
+            if (currentTravelMode !== 'driving') useHardcodedWaypoints = false;
+            await loadRoute();
+            showToast(`Mode: ${mode}`);
+          }
+        });
+      });
+
+      // Recalculate / Load route
+      document.getElementById('btn-recalc').addEventListener('click', async () => {
+        if (!currentOrigin || !currentDestination) {
+          showToast('Please pick both From and To locations', true);
+          return;
+        }
+        const btn = document.getElementById('btn-recalc');
+        const originalText = btn.textContent;
+        // try/finally guarantees the button is re-enabled after every
+        // outcome — including ZERO_RESULTS failures — so subsequent
+        // selections can immediately re-trigger Directions (UX-012).
+        btn.disabled = true;
+        btn.textContent = 'Calculating...';
+        useHardcodedWaypoints = false;
+        let ok = false;
+        try {
+          ok = await loadRoute();
+        } finally {
+          btn.textContent = originalText;
+          btn.disabled = false;
+        }
+        // Explicit route request — reveal the travel-mode tabs (UX-008).
+        if (ok) directionsRequested = true;
+        updateDirectionsGate();
+        if (ok) {
+          showToast(`Route: ${currentOrigin.name} → ${currentDestination.name}`);
+        }
+      });
+
+      // Clear button — wipe both endpoints and the rendered route
+      const clearBtn = document.getElementById('btn-clear-route');
+      if (clearBtn) clearBtn.addEventListener('click', clearRoute);
+
+      // Send-to-Phone modal wiring
+      document.getElementById('btn-send-phone').addEventListener('click', openShareModal);
+      document.getElementById('share-close-btn').addEventListener('click', closeShareModal);
+      document.getElementById('share-copy-btn').addEventListener('click', copyShareUrl);
+      document.getElementById('share-overlay').addEventListener('click', (e) => {
+        if (e.target.id === 'share-overlay') closeShareModal();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeShareModal();
+      });
+
+      // Demo route (Rishon → Kiryat Ata with Route 2 waypoints)
+      document.getElementById('btn-demo-route').addEventListener('click', async () => {
+        const btn = document.getElementById('btn-demo-route');
+        btn.disabled = true;
+        btn.textContent = 'Loading demo route...';
+        currentOrigin = { ...ORIGIN, name: 'Rishon LeZion' };
+        currentDestination = { ...DESTINATION, name: 'Kiryat Ata' };
+        useHardcodedWaypoints = true;
+        directionsRequested = true;        // demo auto-loads a route (UX-008)
+        updateDirectionsGate();
+        // Demo route is driving-only; switch to driving tab if not already there.
+        if (currentTravelMode !== 'driving') {
+          currentTravelMode = 'driving';
+          document.querySelectorAll('#travel-mode-tabs .tm-btn').forEach(t =>
+            t.classList.toggle('active', t.dataset.mode === 'driving'));
+        }
+        // Update input fields visually
+        const fromInput = document.getElementById('input-from');
+        const toInput = document.getElementById('input-to');
+        if (fromInput && fromInput.tagName === 'INPUT') fromInput.value = 'Rishon LeZion';
+        if (toInput && toInput.tagName === 'INPUT') toInput.value = 'Kiryat Ata';
+        const ok = await loadRoute();
+        btn.disabled = false;
+        btn.textContent = 'Use Demo Route (Rishon → Kiryat Ata)';
+        updateDirectionsGate();
+        if (ok) {
+          showToast('Demo route loaded');
+        }
+      });
+
+      // Start/stop button
+      document.getElementById('btn-start').addEventListener('click', () => {
+        if (isRunning) {
+          stopSimulation();
+        } else {
+          startSimulation();
+        }
+      });
+
+      // Speed slider
+      const slider = document.getElementById('speed-slider');
+      const speedVal = document.getElementById('speed-val');
+      slider.addEventListener('input', () => {
+        speed = parseInt(slider.value);
+        speedVal.textContent = speed + 'x';
+      });
+
+      // Manual alert triggers — same logic, different dropdowns per mode.
+      // Manual triggers are for testing and deliberately bypass the route
+      // filter so the operator can force any alert regardless of position.
+      const triggerFromDropdown = (selectId) => {
+        const city = document.getElementById(selectId).value;
+        if (city) {
+          processIncomingAlert(
+            { type: 'Missiles', cities: [city] },
+            20000,
+            { source: 'manual', bypassFilter: true }
+          );
+        }
+      };
+      document.getElementById('btn-alert').addEventListener('click', () => triggerFromDropdown('alert-select'));
+      // btn-alert-live was removed in UX-011; guard in case older markup remains
+      const btnAlertLive = document.getElementById('btn-alert-live');
+      if (btnAlertLive) btnAlertLive.addEventListener('click', () => triggerFromDropdown('alert-select-live'));
+
+      // Share live location
+      document.getElementById('btn-share').addEventListener('click', () => {
+        if (shareSessionId) {
+          stopSharing();
+        } else {
+          startSharing();
+        }
+      });
+
+      // Simulate entering shelter (offline)
+      document.getElementById('btn-offline').addEventListener('click', () => {
+        toggleOfflineSimulation();
+      });
+
+      // Initial gate-state on load (nothing selected yet)
+      updateDirectionsGate();
+
+      // Surface initial load via a toast (setFeedStatus('ok') is now silent —
+      // it drives the Live-mode feed tag, not a top banner). In Simulation
+      // mode the feed is intentionally idle; the toast confirms data load.
+      const zoneCount = Object.keys(polygonIndex).length;
+      if (zoneCount > 0 && allShelters.length > 0) {
+        showToast(`Map ready · ${zoneCount} zones · ${allShelters.length} shelters`);
+      }
+    }
+
+    // ========== GOOGLE MAPS CALLBACK ==========
+    function onGoogleMapsLoaded() {
+      initApp();
+    }
+  </script>
+
+  <!-- Route-aware alert filter + per-region shelter times + share-link builder -->
+  <script src="./shelterTimeConstants.js"></script>
+  <script src="./alertRouteFilter.js"></script>
+  <script src="./mapsShareLink.js"></script>
+
+  <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
+       `loading=async` is Google's current best-practice flag (see
+       https://goo.gle/js-api-loading) — the legacy `async` HTML attribute
+       alone triggers a console warning. -->
+  <script async
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAn00DOQBkWkqQDsRppsHfLgO0oXfv6GDI&loading=async&libraries=geometry,places,marker,routes&callback=onGoogleMapsLoaded">
+  </script>
+</body>
+</html>

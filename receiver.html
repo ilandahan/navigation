@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live Location Receiver — Pikud HaOref POC</title>
+  <link rel="preconnect" href="https://maps.googleapis.com">
+  <link rel="preconnect" href="https://maps.gstatic.com" crossorigin>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; }
+
+    #map { width: 100vw; height: 100vh; }
+
+    /* Header */
+    #header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: white;
+      padding: 14px 20px;
+      z-index: 10;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    #header h1 {
+      font-size: 16px;
+      color: #333;
+      flex: 1;
+    }
+    #header .session {
+      font-family: monospace;
+      font-size: 11px;
+      color: #888;
+      background: #f5f5f5;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    /* Status pill */
+    .status-pill {
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-pill.live { background: #e8f5e9; color: #2e7d32; }
+    .status-pill.lost { background: #ffebee; color: #c62828; }
+    .status-pill.dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #2e7d32;
+    }
+    .status-pill.live .dot {
+      background: #4caf50;
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+    .status-pill.lost .dot {
+      background: #d32f2f;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.2); }
+    }
+
+    /* Info panel */
+    #info-panel {
+      position: fixed;
+      top: 70px; left: 20px;
+      background: white;
+      border-radius: 10px;
+      padding: 16px 20px;
+      z-index: 10;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      min-width: 300px;
+      font-size: 13px;
+    }
+    #info-panel .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    #info-panel .row:last-child { border-bottom: none; }
+    #info-panel .label { color: #888; }
+    #info-panel .value { font-weight: 700; color: #333; font-family: monospace; }
+
+    /* Connection lost overlay */
+    #lost-overlay {
+      display: none;
+      position: fixed;
+      top: 70px; right: 20px;
+      width: 380px;
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      z-index: 15;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+      border-left: 6px solid #ff9800;
+      animation: slide-in 0.3s ease-out;
+    }
+    #lost-overlay.visible { display: block; }
+    #lost-overlay.critical { border-left-color: #d32f2f; }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateX(20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    #lost-overlay .lo-icon {
+      font-size: 36px;
+      margin-bottom: 10px;
+    }
+    #lost-overlay .lo-title {
+      font-size: 19px;
+      font-weight: 700;
+      color: #ef6c00;
+      margin-bottom: 12px;
+    }
+    #lost-overlay.critical .lo-title { color: #d32f2f; }
+    #lost-overlay .lo-body {
+      font-size: 14px;
+      line-height: 1.6;
+      color: #444;
+      margin-bottom: 14px;
+    }
+    #lost-overlay .lo-highlight {
+      background: #fff8e1;
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin: 12px 0;
+      font-style: italic;
+      font-size: 14px;
+      color: #5d4037;
+      text-align: center;
+      line-height: 1.7;
+    }
+    #lost-overlay .lo-timer {
+      font-size: 28px;
+      font-weight: 800;
+      color: #ef6c00;
+      text-align: center;
+      margin: 14px 0;
+      font-family: monospace;
+    }
+    #lost-overlay.critical .lo-timer { color: #d32f2f; }
+    #lost-overlay .lo-detail {
+      font-size: 12px;
+      color: #888;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+
+    /* Reconnected banner */
+    #reconnected-banner {
+      display: none;
+      position: fixed;
+      top: 70px; left: 50%;
+      transform: translateX(-50%);
+      background: #2e7d32;
+      color: white;
+      padding: 12px 28px;
+      border-radius: 0 0 12px 12px;
+      font-size: 15px;
+      font-weight: 700;
+      z-index: 20;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    }
+    #reconnected-banner.visible {
+      display: block;
+      animation: fade-out 3s ease-in-out forwards;
+    }
+    @keyframes fade-out {
+      0%, 60% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    /* Waiting message */
+    #waiting {
+      position: fixed;
+      inset: 0;
+      background: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+      text-align: center;
+      padding: 40px;
+    }
+    #waiting.hidden { display: none; }
+    #waiting .w-icon { font-size: 60px; margin-bottom: 16px; }
+    #waiting h2 { font-size: 22px; color: #333; margin-bottom: 10px; }
+    #waiting p { font-size: 14px; color: #666; max-width: 440px; }
+  </style>
+</head>
+<body>
+  <div id="waiting">
+    <div class="w-icon">📡</div>
+    <h2 id="waiting-title">Waiting for location data...</h2>
+    <p id="waiting-body">This page shows the live location of a person sharing their position. Keep this window open.</p>
+    <div id="session-picker" style="margin-top:20px; display:none;"></div>
+  </div>
+
+  <div id="header">
+    <h1>📍 Live Location — Pikud HaOref Receiver</h1>
+    <div class="session" id="session-id">session: —</div>
+    <div id="status" class="status-pill live"><span class="dot"></span><span id="status-text">Waiting</span></div>
+  </div>
+
+  <div id="info-panel">
+    <div class="row">
+      <span class="label">Name</span>
+      <span class="value" id="info-name">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Coordinates</span>
+      <span class="value" id="info-coords">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Last update</span>
+      <span class="value" id="info-last">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Alert status</span>
+      <span class="value" id="info-alert">—</span>
+    </div>
+  </div>
+
+  <div id="reconnected-banner">✓ Reconnected — location updating again</div>
+  <div id="corrupt-banner" style="display:none;position:fixed;top:80px;left:50%;transform:translateX(-50%);background:#fff3cd;color:#856404;border:1px solid #ffeaa7;padding:10px 16px;border-radius:6px;z-index:200;font-size:13px;max-width:90%;box-shadow:0 2px 8px rgba(0,0,0,0.15)"></div>
+
+  <div id="lost-overlay">
+    <div class="lo-icon">🏠</div>
+    <div class="lo-title" id="lo-title">Connection lost</div>
+    <div class="lo-body" id="lo-body">
+      This is the last known location. The connection may have been lost
+      because they entered a bomb shelter.
+    </div>
+    <div class="lo-timer" id="lo-timer">00:00</div>
+    <div class="lo-detail">Waiting for reconnection...</div>
+    <div class="lo-highlight" id="lo-highlight">
+      It may take up to 10 minutes.<br>
+      Please don't panic.<br>
+      <strong>Just breathe.</strong> 🌬️
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    // ========== CONFIG ==========
+    const OFFLINE_THRESHOLD_MS = 4000;    // consider offline after 4s no update
+    const CRITICAL_THRESHOLD_MS = 600000; // 10 min - switch to critical message
+    const POLL_INTERVAL_MS = 500;         // poll twice per second for snappier detection
+
+    // ========== STATE ==========
+    const params = new URLSearchParams(location.search);
+    const sessionId = params.get('session') || 'default';
+    const storageKey = `share_${sessionId}`;
+
+    let map = null;
+    let senderMarker = null;
+    let accuracyCircle = null;
+    let lastUpdateTs = 0;
+    let isOffline = false;
+    let lostSince = null; // Date when connection was lost
+    let lastKnownLocation = null;
+    let corruptKeysSeen = new Set();
+
+    // SAFETY: every dropped/pruned share entry is a potential signal of a
+    // sender-side payload regression. Don't leave it in console.warn only —
+    // surface a visible banner so the receiver-side operator can flag it.
+    function surfaceCorruptEntry(key, reason) {
+      if (corruptKeysSeen.has(key)) return;
+      corruptKeysSeen.add(key);
+      const el = document.getElementById('corrupt-banner');
+      if (!el) return;
+      const count = corruptKeysSeen.size;
+      el.textContent = '⚠️ ' + count + ' share session' + (count === 1 ? '' : 's') +
+        ' could not be read (last: ' + key + ' — ' + reason + ')';
+      el.style.display = 'block';
+    }
+
+    document.getElementById('session-id').textContent = `session: ${sessionId}`;
+    console.log(`[Receiver] Listening on localStorage key: ${storageKey}`);
+    console.log(`[Receiver] Current localStorage keys:`, Object.keys(localStorage).filter(k => k.startsWith('share_')));
+
+    // Diagnostic: log when the window is closing/navigating so we can tell if it's being closed
+    window.addEventListener('beforeunload', () => {
+      console.log('[Receiver] BEFOREUNLOAD fired — window is closing or navigating');
+    });
+    window.addEventListener('pagehide', () => {
+      console.log('[Receiver] PAGEHIDE fired');
+    });
+
+    // If no session param was provided, offer a picker with the active sessions
+    if (sessionId === 'default') {
+      showSessionPicker();
+    }
+
+    const LIVE_THRESHOLD_MS = 10000; // only show sessions pinging within last 10s
+
+    function showSessionPicker() {
+      const now = Date.now();
+
+      // Build a set of ended session IDs
+      const endedIds = new Set();
+      Object.keys(localStorage).forEach(key => {
+        if (key.endsWith('_ended')) {
+          endedIds.add(key.replace(/^share_/, '').replace(/_ended$/, ''));
+        }
+      });
+
+      // Auto-cleanup stale entries (no ping for >30s OR explicitly ended)
+      const toDelete = [];
+      Object.keys(localStorage).forEach(key => {
+        if (!key.startsWith('share_')) return;
+        if (key.endsWith('_ended')) {
+          // also remove the underlying data for ended sessions
+          toDelete.push(key);
+          toDelete.push(key.replace(/_ended$/, ''));
+          return;
+        }
+        try {
+          const data = JSON.parse(localStorage.getItem(key));
+          if (!data || !data.timestamp || now - data.timestamp > 30000) {
+            toDelete.push(key);
+          }
+        } catch (e) {
+          // Corrupt entry — prune it but log the failing key so a real
+          // bug (e.g. a serialization regression) isn't hidden.
+          console.warn('[Receiver] pruning corrupt share key', key, e.message);
+          surfaceCorruptEntry(key, 'unparseable JSON');
+          toDelete.push(key);
+        }
+      });
+      toDelete.forEach(k => localStorage.removeItem(k));
+      if (toDelete.length) console.log('[Receiver] Cleaned up stale keys:', toDelete);
+
+      // Now collect only LIVE candidates (pinged within LIVE_THRESHOLD_MS)
+      const candidates = [];
+      Object.keys(localStorage).forEach(key => {
+        if (!key.startsWith('share_') || key.endsWith('_ended')) return;
+        const sessId = key.replace(/^share_/, '');
+        if (endedIds.has(sessId)) return;
+        try {
+          const data = JSON.parse(localStorage.getItem(key));
+          if (data && data.timestamp && now - data.timestamp <= LIVE_THRESHOLD_MS) {
+            candidates.push({
+              key,
+              sessionId: sessId,
+              data,
+              ageSec: Math.round((now - data.timestamp) / 1000)
+            });
+          }
+        } catch (e) {
+          // Corrupted share entry — log which key so a real bug isn't hidden.
+          console.warn('[Receiver] corrupted share entry for key=' + key + ':', e.message);
+          surfaceCorruptEntry(key, 'unparseable JSON');
+        }
+      });
+
+      const picker = document.getElementById('session-picker');
+      document.getElementById('waiting-title').textContent = 'No session specified';
+
+      if (candidates.length === 0) {
+        document.getElementById('waiting-body').innerHTML =
+          'No live sessions found.<br><br>' +
+          'Open this page from the sender by clicking <strong>"📡 Share Live Location"</strong>.<br>' +
+          'A new window with the correct session ID will open automatically.';
+        picker.style.display = 'none';
+        // Recheck every few seconds in case a sender starts sharing
+        setTimeout(() => { if (sessionId === 'default') showSessionPicker(); }, 3000);
+        return;
+      }
+
+      candidates.sort((a, b) => b.data.timestamp - a.data.timestamp);
+
+      // If exactly one live session, auto-redirect to it
+      if (candidates.length === 1) {
+        console.log('[Receiver] Single live session found, auto-switching to:', candidates[0].sessionId);
+        location.href = `?session=${candidates[0].sessionId}`;
+        return;
+      }
+
+      let html = '<p style="margin-bottom:12px;color:#555">Multiple live sessions. Pick one:</p>';
+      candidates.forEach(c => {
+        html += `
+          <a href="?session=${c.sessionId}"
+             style="display:block;padding:10px 14px;margin-bottom:8px;border:1px solid #4caf50;border-radius:6px;text-decoration:none;color:#333;background:white">
+            <div style="font-weight:700">🟢 ${c.data.name || 'Anonymous'} <span style="color:#888;font-size:11px;font-family:monospace">(${c.sessionId})</span></div>
+            <div style="font-size:12px;color:#666">Live · last ping ${c.ageSec}s ago · ${c.data.lat?.toFixed(4)}, ${c.data.lng?.toFixed(4)}</div>
+          </a>
+        `;
+      });
+      picker.innerHTML = html;
+      picker.style.display = 'block';
+    }
+
+    // ========== GOOGLE MAPS INIT ==========
+    async function onGoogleMapsLoaded() {
+      // AdvancedMarkerElement lives in the marker library.
+      if (google.maps.importLibrary) await google.maps.importLibrary('marker');
+      map = new google.maps.Map(document.getElementById('map'), {
+        center: { lat: 32.4, lng: 34.88 },
+        zoom: 10,
+        mapId: 'DEMO_MAP_ID',
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: false
+      });
+      startPolling();
+    }
+
+    // ========== POLLING ==========
+    function startPolling() {
+      setInterval(tick, POLL_INTERVAL_MS);
+      tick(); // immediate first read
+    }
+
+    let tickCount = 0;
+    function tick() {
+      tickCount++;
+      const raw = localStorage.getItem(storageKey);
+      const now = Date.now();
+
+      // Periodic status log (every 10 ticks = 5 seconds)
+      if (tickCount % 10 === 0) {
+        const sinceSec = lastUpdateTs ? Math.round((now - lastUpdateTs) / 1000) : 'n/a';
+        console.log(`[Receiver] tick #${tickCount} | key=${storageKey} | data=${raw ? 'present' : 'null'} | lastUpdateAgo=${sinceSec}s | isOffline=${isOffline}`);
+      }
+
+      // Check for explicit "_ended" marker → treat as offline
+      const endedMarker = localStorage.getItem(storageKey + '_ended');
+      if (endedMarker && lastUpdateTs > 0) {
+        if (!isOffline) {
+          console.log('[Receiver] Sender stopped sharing explicitly → offline');
+          isOffline = true;
+          lostSince = now;
+          showLostOverlay();
+          setStatus('lost', 'Lost');
+        }
+        updateLostTimer();
+        return;
+      }
+
+      if (!raw) return;
+
+      let data;
+      try { data = JSON.parse(raw); } catch (e) {
+        console.warn('[Receiver] failed to parse share payload:', e.message);
+        surfaceCorruptEntry(storageKey, 'unparseable payload');
+        return;
+      }
+
+      // Hide splash on first valid data
+      const waitingEl = document.getElementById('waiting');
+      if (waitingEl && !waitingEl.classList.contains('hidden')) {
+        waitingEl.classList.add('hidden');
+      }
+
+      // Is this a new ping?
+      if (data.timestamp > lastUpdateTs) {
+        lastUpdateTs = data.timestamp;
+        lastKnownLocation = data;
+        renderSender(data);
+
+        if (isOffline) {
+          console.log('[Receiver] New ping received → back online');
+          hideLostOverlay();
+          showReconnectedBanner();
+          isOffline = false;
+          lostSince = null;
+        } else {
+          setStatus('live', 'Live');
+        }
+      } else {
+        // Stale: check how long since last good ping
+        const since = now - lastUpdateTs;
+        if (lastUpdateTs > 0 && since > OFFLINE_THRESHOLD_MS && !isOffline) {
+          console.log(`[Receiver] ${since}ms without a new ping (threshold=${OFFLINE_THRESHOLD_MS}ms) → OFFLINE`);
+          isOffline = true;
+          lostSince = now;
+          showLostOverlay();
+          setStatus('lost', 'Lost');
+        }
+      }
+
+      if (isOffline) updateLostTimer();
+    }
+
+    function renderSender(data) {
+      const pos = { lat: data.lat, lng: data.lng };
+
+      if (!senderMarker) {
+        const dot = makeSenderDot('#4285F4');
+        senderMarker = new google.maps.marker.AdvancedMarkerElement({
+          position: pos,
+          map: map,
+          content: dot,
+          title: data.name || 'Sender'
+        });
+        senderMarker._content = dot;
+        map.setCenter(pos);
+        map.setZoom(14);
+      } else {
+        senderMarker.position = pos;
+      }
+
+      if (!accuracyCircle && data.accuracy) {
+        accuracyCircle = new google.maps.Circle({
+          map: map,
+          center: pos,
+          radius: data.accuracy,
+          fillColor: '#4285F4',
+          fillOpacity: 0.12,
+          strokeColor: '#4285F4',
+          strokeOpacity: 0.4,
+          strokeWeight: 1
+        });
+      } else if (accuracyCircle) {
+        accuracyCircle.setCenter(pos);
+        if (data.accuracy) accuracyCircle.setRadius(data.accuracy);
+      }
+
+      // Info panel
+      document.getElementById('info-name').textContent = data.name || 'Anonymous';
+      document.getElementById('info-coords').textContent =
+        `${data.lat.toFixed(5)}, ${data.lng.toFixed(5)}`;
+      document.getElementById('info-last').textContent = new Date(data.timestamp).toLocaleTimeString();
+      document.getElementById('info-alert').textContent =
+        data.inDanger ? '⚠️ IN DANGER ZONE' : '✓ Safe';
+      document.getElementById('info-alert').style.color = data.inDanger ? '#d32f2f' : '#2e7d32';
+    }
+
+    function setStatus(cls, text) {
+      const el = document.getElementById('status');
+      el.className = 'status-pill ' + cls;
+      document.getElementById('status-text').textContent = text;
+    }
+
+    // Build the DOM element AdvancedMarkerElement renders for the sender.
+    // Color toggled in showLostOverlay/hideLostOverlay by swapping background.
+    function makeSenderDot(fill) {
+      const el = document.createElement('div');
+      el.className = 'sender-dot';
+      el.style.width = '20px';
+      el.style.height = '20px';
+      el.style.borderRadius = '50%';
+      el.style.background = fill;
+      el.style.border = '3px solid #fff';
+      el.style.boxShadow = '0 1px 4px rgba(0,0,0,0.4)';
+      el.style.pointerEvents = 'none';
+      return el;
+    }
+    function setSenderDotColor(fill) {
+      if (senderMarker && senderMarker._content) {
+        senderMarker._content.style.background = fill;
+      }
+    }
+
+    function showLostOverlay() {
+      document.getElementById('lost-overlay').classList.add('visible');
+      // Change driver marker color to indicate last known
+      setSenderDotColor('#ff9800');
+    }
+
+    function hideLostOverlay() {
+      document.getElementById('lost-overlay').classList.remove('visible', 'critical');
+      setSenderDotColor('#4285F4');
+    }
+
+    function showReconnectedBanner() {
+      const banner = document.getElementById('reconnected-banner');
+      banner.classList.remove('visible'); // reset animation
+      void banner.offsetWidth;
+      banner.classList.add('visible');
+      setTimeout(() => banner.classList.remove('visible'), 3500);
+    }
+
+    function updateLostTimer() {
+      if (!lostSince) return;
+      const elapsed = Date.now() - lostSince;
+      const mm = String(Math.floor(elapsed / 60000)).padStart(2, '0');
+      const ss = String(Math.floor((elapsed % 60000) / 1000)).padStart(2, '0');
+      document.getElementById('lo-timer').textContent = `${mm}:${ss}`;
+
+      // Escalate after 10 minutes
+      if (elapsed > CRITICAL_THRESHOLD_MS) {
+        document.getElementById('lost-overlay').classList.add('critical');
+        document.getElementById('lo-title').textContent = 'Extended silence';
+        document.getElementById('lo-body').innerHTML =
+          'The connection has been lost for over 10 minutes. ' +
+          'This could mean the person is in a deep shelter with no signal, ' +
+          'or the situation has changed.';
+        document.getElementById('lo-highlight').innerHTML =
+          'Consider contacting emergency services<br>' +
+          '<strong>📞 Israel emergency: 101 (Magen David Adom) / 100 (Police)</strong>';
+      }
+    }
+  </script>
+
+  <!-- Replace YOUR_API_KEY - same key as index.html -->
+  <script async
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAn00DOQBkWkqQDsRppsHfLgO0oXfv6GDI&loading=async&callback=onGoogleMapsLoaded">
+  </script>
+</body>
+</html>
