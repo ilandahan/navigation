@@ -5,7 +5,13 @@
 CLAUDE.md
 
 # ---- Dev-only artifacts (not served by the app) ----
-docs/
+# docs/ IS tracked — PRD, tech-spec, runbook, code reviews, evaluation
+# reports + QA screenshots. Excluded from Firebase Hosting via
+# firebase.json `ignore`. Large binaries (video recordings) stay out
+# via the patterns below — keep markdown + PNGs.
+docs/**/*.mp4
+docs/**/*.mov
+docs/**/*.zip
 test-route-filter.html
 download-polygons.js
 # tests/ IS tracked — offline suite (filter, shareLink, tbt-step-index) +
