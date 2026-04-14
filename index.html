@@ -2868,22 +2868,12 @@
       }
     }
 
-    // Sample the route overview_path and check how many active alert polygons it intersects
+    // Sample the route overview_path and check how many active alert polygons it intersects.
+    // Implementation lives in dangerZone.js so it can be unit-tested.
     function countRouteAlertIntersections(route) {
-      if (activeAlerts.length === 0) return 0;
-      const samples = route.overview_path;
-      const intersecting = new Set();
-      for (const alert of activeAlerts) {
-        for (const poly of alert.polygons) {
-          for (let i = 0; i < samples.length; i += 3) {
-            if (google.maps.geometry.poly.containsLocation(samples[i], poly)) {
-              intersecting.add(poly);
-              break;
-            }
-          }
-        }
-      }
-      return intersecting.size;
+      return window.DangerZone.countIntersections(
+        route.overview_path, activeAlerts, google.maps.geometry.poly.containsLocation
+      );
     }
 
     // Update the Route Options panel (show each alternative + danger status)
@@ -3774,30 +3764,16 @@
     }
 
     // ========== DANGER ZONE DETECTION ==========
+    // Spatial decision lives in dangerZone.js; this wrapper owns the
+    // insideDangerZone state machine + DOM update side effect.
     function checkDangerZone(position) {
-      if (!position || activeAlerts.length === 0) {
-        if (insideDangerZone) {
-          insideDangerZone = false;
-          updateDangerVisuals(false);
-        }
-        return;
-      }
-
-      let isInside = false;
-      for (const alert of activeAlerts) {
-        for (const poly of alert.polygons) {
-          if (google.maps.geometry.poly.containsLocation(position, poly)) {
-            isInside = true;
-            break;
-          }
-        }
-        if (isInside) break;
-      }
-
-      if (isInside && !insideDangerZone) {
+      const verdict = window.DangerZone.check(
+        position, activeAlerts, google.maps.geometry.poly.containsLocation
+      );
+      if (verdict.inside && !insideDangerZone) {
         insideDangerZone = true;
         updateDangerVisuals(true);
-      } else if (!isInside && insideDangerZone) {
+      } else if (!verdict.inside && insideDangerZone) {
         insideDangerZone = false;
         updateDangerVisuals(false);
       }
@@ -4731,6 +4707,7 @@
   <script src="./mapsShareLink.js"></script>
   <script src="./routeAdapter.js"></script>
   <script src="./polygonIndex.js"></script>
+  <script src="./dangerZone.js"></script>
 
   <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
        `loading=async` is Google's current best-practice flag (see
