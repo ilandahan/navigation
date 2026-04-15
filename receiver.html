@@ -269,6 +269,7 @@
 
   <div id="map"></div>
 
+  <script src="./lostTimer.js"></script>
   <script>
     // ========== CONFIG ==========
     const OFFLINE_THRESHOLD_MS = 4000;    // consider offline after 4s no update
@@ -548,12 +549,11 @@
     function updateLostTimer() {
       if (!lostSince) return;
       const elapsed = Date.now() - lostSince;
-      const mm = String(Math.floor(elapsed / 60000)).padStart(2, '0');
-      const ss = String(Math.floor((elapsed % 60000) / 1000)).padStart(2, '0');
-      document.getElementById('lo-timer').textContent = `${mm}:${ss}`;
+      document.getElementById('lo-timer').textContent =
+        window.LostTimer.formatLostTime(elapsed);
 
       // Escalate after 10 minutes
-      if (elapsed > CRITICAL_THRESHOLD_MS) {
+      if (window.LostTimer.isLostCritical(elapsed, CRITICAL_THRESHOLD_MS)) {
         document.getElementById('lost-overlay').classList.add('critical');
         document.getElementById('lo-title').textContent = 'Extended silence';
         document.getElementById('lo-body').innerHTML =

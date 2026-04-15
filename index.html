@@ -751,6 +751,31 @@
     }
     .btn-clear:hover { color: var(--color-primary); }
 
+    /* "Use my location" — text-style button placed INSIDE .ri-stack between
+       From and To. Solid surface background masks the dashed ri-stack
+       connector behind it; z-index:1 matches the .ri-icon mask convention. */
+    .btn-my-loc {
+      align-self: flex-start;
+      background: var(--color-surface);
+      border: none;
+      color: var(--color-primary);
+      cursor: pointer;
+      padding: 4px 6px 4px 30px;          /* left pad aligns with input text past icon */
+      font-size: 13px;
+      font-family: inherit;
+      text-align: left;
+      position: relative;
+      z-index: 1;
+    }
+    .btn-my-loc:hover {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .btn-my-loc:disabled {
+      color: var(--color-text-subtle);
+      cursor: not-allowed;
+    }
+
     /* Primary directions actions (Directions + Send to Phone) share a row.
        Rendered ABOVE the travel-mode tabs (per UX-006) and hidden until both
        From and To are filled. Explicit `[hidden]` override because the
@@ -1425,6 +1450,10 @@
             <input type="text" id="input-from" placeholder="Choose starting point"
                    autocomplete="off">
           </div>
+          <!-- "Use my location" shortcut — sets From = current GPS.
+               Inside .ri-stack so it reads under From / above To. Its
+               opaque background masks the dashed connector (.ri-stack::before). -->
+          <button id="btn-use-my-location" type="button" class="btn-my-loc">📍 Use my location</button>
           <div class="ri-field ri-to">
             <span class="ri-icon" aria-hidden="true"></span>
             <label for="input-to">To</label>
@@ -2091,9 +2120,16 @@
         // SAFETY: if the user drops out of auth mid-session (token expiry,
         // cross-tab sign-out, revocation), tear down any active driving /
         // sharing so we're not writing with a stale or missing token.
+        // Also wipe route + From/To so a second user on the same browser
+        // does NOT inherit the previous user's data (LIVE-AUTH-GATE-001).
         if (!user) {
-          if (isDriving) stopNavigation();
-          if (shareSessionId) stopSharing();
+          // Cleanup order is computed by SignOutCleanup so the contract
+          // (stop nav → stop sharing → clearRoute) is unit-tested.
+          const steps = window.SignOutCleanup.getAuthCleanupSteps({
+            isDriving, hasShare: !!shareSessionId
+          });
+          const handlers = { stopNavigation, stopSharing, clearRoute };
+          for (const step of steps) handlers[step]();
         }
         updateShareButton();
         updateAuthPanel();
@@ -2121,6 +2157,22 @@
           ? (user.email || user.displayName || user.uid)
           : '—';
       }
+      updateLiveSharedVisibility();
+    }
+
+    // Hard auth gate for Live mode: hide the shared directions panel
+    // (From/To inputs, Directions, Send-to-phone, Demo route, route options)
+    // AND the share row whenever Live is the active mode and no user is
+    // signed in. In Sim mode (or signed-in Live) both stay visible.
+    // Called from updateAuthPanel (auth-state changes) and setMode (tab
+    // switches), plus once during initApp for the cold-load paint.
+    function updateLiveSharedVisibility() {
+      const user = window.firebase && window.firebase.auth.currentUser;
+      const liveLocked = window.AuthGate.computeLiveLocked(currentMode, user);
+      const directions = document.getElementById('directions-panel');
+      const shareRow = document.querySelector('.share-row');
+      if (directions) directions.hidden = liveLocked;
+      if (shareRow)   shareRow.hidden   = liveLocked;
     }
 
     // ========== SHELTERS ==========
@@ -2242,7 +2294,7 @@
       } catch (e) {
         console.error('Navigate to shelter failed:', e);
         const shelterDest = { name: shelter.name };
-        showToast(humanizeDirectionsError(e, currentOrigin, shelterDest), true, TOAST_MS.errorLong);
+        showToast(window.Formatters.humanizeDirectionsError(e, currentOrigin, shelterDest), true, TOAST_MS.errorLong);
       }
     }
 
@@ -2323,7 +2375,7 @@
           html += `
             <div class="sp-item escape">
               <div class="sp-name">Escape Route ${i + 1}</div>
-              <div class="sp-meta">${formatDistance(s.distance)} · ${formatDuration(s.duration)} · exits zone quickly</div>
+              <div class="sp-meta">${window.Formatters.formatDistance(s.distance)} · ${window.Formatters.formatDuration(s.duration)} · exits zone quickly</div>
               <button data-escape-idx="${i}">Take This Route</button>
             </div>
           `;
@@ -2886,32 +2938,8 @@
     }
 
     // Update the Route Options panel (show each alternative + danger status)
-    function escapeHtml(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-
-    // Produce a "via X" label for a route. Prefer Google's `route.summary`
-    // (the dominant highway name); fall back to the longest leg step's
-    // road name, which is what Google Maps' own UI shows when summary is
-    // empty (e.g. walking/bicycling routes).
-    function summarizeRouteVia(route) {
-      if (route.summary) return route.summary;
-      // Scan steps for the longest one with a recognisable instruction.
-      let best = null, bestLen = 0;
-      for (const leg of route.legs) {
-        for (const step of leg.steps) {
-          const len = step.distance ? step.distance.value : 0;
-          if (len > bestLen && step.instructions) {
-            bestLen = len;
-            best = step.instructions.replace(/<[^>]+>/g, '').trim();
-          }
-        }
-      }
-      if (best && best.length > 40) best = best.slice(0, 40) + '…';
-      return best;
-    }
+    // escapeHtml + summarizeRouteVia moved to formatters.js — call
+    // window.Formatters.escapeHtml / window.Formatters.summarizeRouteVia at sites.
 
     function updateRouteOptionsPanel() {
       const panel = document.getElementById('route-options');
@@ -2934,13 +2962,13 @@
         const badge = dangerCount > 0
           ? `<span class="ro-badge danger">${dangerCount} danger zone${dangerCount > 1 ? 's' : ''}</span>`
           : '';
-        const via = summarizeRouteVia(route);
+        const via = window.Formatters.summarizeRouteVia(route);
         html += `
           <div class="route-opt ${isActive ? 'active' : ''} ${dangerCount > 0 ? 'has-danger' : ''}"
                data-idx="${idx}">
-            <div class="ro-name">${formatDuration(totalS)}${badge}</div>
-            <div class="ro-stats">${formatDistance(totalM)}</div>
-            ${via ? `<div class="ro-via">via ${escapeHtml(via)}</div>` : '<div class="ro-via"></div>'}
+            <div class="ro-name">${window.Formatters.formatDuration(totalS)}${badge}</div>
+            <div class="ro-stats">${window.Formatters.formatDistance(totalM)}</div>
+            ${via ? `<div class="ro-via">via ${window.Formatters.escapeHtml(via)}</div>` : '<div class="ro-via"></div>'}
           </div>
         `;
       });
@@ -3033,7 +3061,7 @@
         return true;
       } catch (e) {
         console.error('Directions failed:', e);
-        showToast(humanizeDirectionsError(e, currentOrigin, currentDestination), true, TOAST_MS.errorLong);
+        showToast(window.Formatters.humanizeDirectionsError(e, currentOrigin, currentDestination), true, TOAST_MS.errorLong);
         return false;
       }
     }
@@ -3042,23 +3070,7 @@
     // ZERO_RESULTS almost always means one endpoint is off-grid (middle of a
     // lake, deep in a park, a pin dropped offshore). Naming the likely culprit
     // beats showing the MapsRequestError stack.
-    function humanizeDirectionsError(err, origin, destination) {
-      const raw = (err && (err.message || err.code || '')) + '';
-      const oName = (origin && origin.name) || 'origin';
-      const dName = (destination && destination.name) || 'destination';
-      if (/ZERO_RESULTS/i.test(raw)) {
-        return `No driving route found between "${oName}" and "${dName}". ` +
-               `One of them may be off-road (water, park, etc.) — try picking ` +
-               `a nearby city, street, or landmark.`;
-      }
-      if (/NOT_FOUND/i.test(raw)) {
-        return `One of the locations could not be geocoded. Try a more specific address.`;
-      }
-      if (/OVER_QUERY_LIMIT|REQUEST_DENIED/i.test(raw)) {
-        return 'Map service temporarily unavailable — please try again in a moment.';
-      }
-      return 'Route calculation failed: ' + (err.message || err.code || 'unknown');
-    }
+    // humanizeDirectionsError moved to formatters.js (window.Formatters).
 
     function setSimControlsEnabled(enabled) {
       const startBtn = document.getElementById('btn-start');
@@ -3708,21 +3720,12 @@
     }
 
     // ========== ROUTE INFO CARD ==========
-    function formatDuration(seconds) {
-      const h = Math.floor(seconds / 3600);
-      const m = Math.round((seconds % 3600) / 60);
-      if (h > 0) return `${h}h ${m}m`;
-      return `${m}m`;
-    }
-
-    function formatDistance(meters) {
-      if (meters < 1000) return `${Math.round(meters)} m`;
-      return `${(meters / 1000).toFixed(1)} km`;
-    }
+    // formatDuration + formatDistance moved to formatters.js — call
+    // window.Formatters.formatDuration / window.Formatters.formatDistance at sites.
 
     function updateRouteInfoCard() {
-      document.getElementById('ri-distance').textContent = formatDistance(routeTotalMeters);
-      document.getElementById('ri-duration').textContent = formatDuration(routeTotalSeconds);
+      document.getElementById('ri-distance').textContent = window.Formatters.formatDistance(routeTotalMeters);
+      document.getElementById('ri-duration').textContent = window.Formatters.formatDuration(routeTotalSeconds);
       const eta = new Date(Date.now() + routeTotalSeconds * 1000);
       document.getElementById('ri-eta').textContent = eta.toLocaleTimeString([], {
         hour: '2-digit', minute: '2-digit'
@@ -3736,7 +3739,7 @@
       const remainingMeters = routeTotalMeters * (1 - progress);
       const remainingSeconds = routeTotalSeconds * (1 - progress);
       dom.riRemaining.textContent =
-        `${formatDistance(remainingMeters)} / ${formatDuration(remainingSeconds)}`;
+        `${window.Formatters.formatDistance(remainingMeters)} / ${window.Formatters.formatDuration(remainingSeconds)}`;
       dom.riRemainingRow.hidden = false;
 
       // Update ETA based on actual start time + remaining time from sim
@@ -4294,6 +4297,40 @@
       target.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
+    // "📍 Use my location" handler: sets the From field to the driver's
+    // current GPS position without going through address autocomplete.
+    // Mirrors the map-corner locate-me button's error handling and uses
+    // the same options (enableHighAccuracy + 10s timeout).
+    function useMyLocationAsFrom() {
+      const btn = document.getElementById('btn-use-my-location');
+      if (!navigator.geolocation) {
+        showToast('Geolocation not supported by this browser', true, TOAST_MS.error);
+        return;
+      }
+      if (!btn) return;
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ Locating…';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          currentOrigin = window.MyLocation.buildMyLocationOrigin(pos.coords);
+          const fromInput = document.getElementById('input-from');
+          if (fromInput) setAutocompleteText(fromInput, window.MyLocation.MY_LOCATION_LABEL);
+          directionsRequested = false;
+          updateDirectionsGate();
+          showToast(window.MyLocation.formatMyLocationToast(pos.coords.accuracy));
+        },
+        (err) => {
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          showToast(window.MyLocation.describeGeolocationError(err), true, TOAST_MS.error);
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
     function setupAutocomplete() {
       console.log('[Autocomplete] Checking Places library...');
 
@@ -4400,6 +4437,10 @@
       });
       dom.simControls.hidden = mode !== 'simulation';
       dom.liveControls.hidden = mode !== 'live';
+
+      // Live mode without a signed-in user must hide From/To + Share so the
+      // auth gate is the only interactive surface (LIVE-AUTH-GATE-001).
+      updateLiveSharedVisibility();
 
       // Demo button visibility depends on currentMode (UX-014) — refresh.
       updateDirectionsGate();
@@ -4654,11 +4695,18 @@
       if (signOutBtn) {
         signOutBtn.addEventListener('click', async () => {
           // Tear down any active session before releasing the auth token.
-          // Order matters: stop sharing (needs valid token to write endedAt)
-          // then stop navigation (local GPS + feed poll, no auth needed).
-          if (shareSessionId) await stopSharing();
-          if (isDriving) stopNavigation();
-          await signOutCurrent();
+          // Order (sharing → nav → signOut) is computed by SignOutCleanup
+          // so the contract is unit-tested. Sharing is awaited because it
+          // writes endedAt to Firestore and needs the still-valid token.
+          const steps = window.SignOutCleanup.getUserSignOutSteps({
+            isDriving, hasShare: !!shareSessionId
+          });
+          const handlers = {
+            stopSharing,
+            stopNavigation,
+            signOut: signOutCurrent
+          };
+          for (const step of steps) await handlers[step]();
         });
       }
 
@@ -4675,8 +4723,15 @@
         stopDrivingBtn.addEventListener('click', () => stopNavigation());
       }
       // Paint the auth panel once on load (auth-state listener will keep it
-      // current on every sign-in/out afterwards).
+      // current on every sign-in/out afterwards). updateAuthPanel itself
+      // chains into updateLiveSharedVisibility so the directions panel +
+      // share row reflect the cold-load (logged-out, simulation) state.
       updateAuthPanel();
+      updateLiveSharedVisibility();
+
+      // "Use my location" shortcut for the From field.
+      const myLocBtn = document.getElementById('btn-use-my-location');
+      if (myLocBtn) myLocBtn.addEventListener('click', useMyLocationAsFrom);
 
       // Share live location
       document.getElementById('btn-share').addEventListener('click', () => {
@@ -4717,6 +4772,10 @@
   <script src="./routeAdapter.js"></script>
   <script src="./polygonIndex.js"></script>
   <script src="./dangerZone.js"></script>
+  <script src="./authGate.js"></script>
+  <script src="./myLocation.js"></script>
+  <script src="./formatters.js"></script>
+  <script src="./signOutCleanup.js"></script>
 
   <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
        `loading=async` is Google's current best-practice flag (see
