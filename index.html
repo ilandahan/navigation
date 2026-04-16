@@ -1365,8 +1365,10 @@
       box-shadow: var(--panel-shadow);
       font-size: 22px;
       cursor: pointer;
-      line-height: 44px;
-      text-align: center;
+      /* Flex centering — reliable for unicode glyphs */
+      justify-content: center;
+      align-items: center;
+      padding: 0;
     }
     /* Close button inside drawer (mobile only) */
     #sidebar-close {
@@ -1379,8 +1381,10 @@
       background: #e0e0e0;
       font-size: 14px;
       cursor: pointer;
-      line-height: 28px;
-      text-align: center;
+      /* Flex centering — reliable for unicode glyphs */
+      justify-content: center;
+      align-items: center;
+      padding: 0;
       z-index: 1;
       color: #555;
     }
@@ -1396,8 +1400,8 @@
 
     @media (max-width: 768px) {
       /* ── Hamburger visible ────────────────────────────────── */
-      #sidebar-toggle { display: block; }
-      #sidebar-close  { display: block; }
+      #sidebar-toggle { display: flex; }
+      #sidebar-close  { display: flex; }
 
       /* ── Sidebar → slide-in drawer ────────────────────────── */
       #controls {
@@ -5102,7 +5106,7 @@
         controlsPanel.classList.remove('open');
         sidebarOverlay.classList.remove('open');
         // Re-show hamburger only on mobile
-        if (window.innerWidth <= 768) sidebarToggle.style.display = 'block';
+        if (window.innerWidth <= 768) sidebarToggle.style.display = 'flex';
       }
       sidebarToggle.addEventListener('click', openSidebar);
       sidebarClose.addEventListener('click', closeSidebar);
