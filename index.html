@@ -4554,6 +4554,12 @@
       if (mode === 'live') {
         enterLiveMode();
       }
+
+      // Simulation mode: auto-load demo route if no route is currently loaded
+      if (mode === 'simulation' && (!currentOrigin || !currentDestination)) {
+        const demoBtn = document.getElementById('btn-demo-route');
+        if (demoBtn) demoBtn.click();
+      }
     }
 
     // Entering Live mode no longer auto-starts GPS + polling. The user
@@ -4858,6 +4864,13 @@
 
       // Initial gate-state on load (nothing selected yet)
       updateDirectionsGate();
+
+      // Auto-load demo route in Simulation mode so the user sees From/To
+      // populated and can immediately press Start Simulation.
+      if (currentMode === 'simulation') {
+        const demoBtn = document.getElementById('btn-demo-route');
+        if (demoBtn) demoBtn.click();
+      }
 
       // Surface initial load via a toast (setFeedStatus('ok') is now silent —
       // it drives the Live-mode feed tag, not a top banner). In Simulation
