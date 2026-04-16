@@ -1612,34 +1612,78 @@
       { lat: 32.5200, lng: 34.8900 }  // Caesarea
     ];
 
+    // All 10 real alert categories from alertCategories.json (ids 1-12, excluding
+    // memorial day 5/6 and update/flash 13/14 which are priority 0 = drop).
+    // Spaced along the Tel Aviv → Haifa route so every color state is visible.
     const MOCK_ALERTS = [
+      // ── yellow tier (51-119) ──────────────────────────────────────────
       {
-        triggerAtPercent: 0.22,
-        alert: { rid: 'mock-22', catId: 1, category: 'missilealert', priority: 120,
-                 colorState: 'red', type: 'טיל', cities: ['נתניה - מזרח', 'נתניה - מערב'] },
-        durationMs: 25000
-      },
-      {
-        triggerAtPercent: 0.30,
-        alert: { rid: 'mock-30', catId: 2, category: 'uav', priority: 130,
-                 colorState: 'purple', type: 'כטב״ם', cities: ['כפר יונה', 'פרדסיה'] },
-        durationMs: 25000
-      },
-      {
-        triggerAtPercent: 0.50,
-        alert: { rid: 'mock-50', catId: 4, category: 'warning', priority: 140,
-                 colorState: 'red', type: 'אזהרה מוקדמת', cities: ['חדרה - מרכז', 'חדרה - מערב'] },
-        durationMs: 18000
-      },
-      {
-        triggerAtPercent: 0.70,
-        alert: { rid: 'mock-70', catId: 11, category: 'tsunami', priority: 100,
-                 colorState: 'yellow', type: 'צונאמי', cities: ['אור עקיבא', 'קיסריה'] },
+        triggerAtPercent: 0.05,
+        alert: { rid: 'mock-05', catId: 7, category: 'earthquakealert1', priority: 90,
+                 colorState: 'yellow', type: 'רעידת אדמה', cities: ['ראשון לציון - מערב', 'ראשון לציון - מזרח'] },
         durationMs: 20000
       },
       {
-        triggerAtPercent: 0.80,
-        clear: { rid: 'mock-22' }
+        triggerAtPercent: 0.44,
+        alert: { rid: 'mock-44', catId: 11, category: 'tsunami', priority: 100,
+                 colorState: 'yellow', type: 'צונאמי', cities: ['חדרה - מערב', 'חדרה - נווה חיים'] },
+        durationMs: 20000
+      },
+      {
+        triggerAtPercent: 0.52,
+        alert: { rid: 'mock-52', catId: 8, category: 'earthquakealert2', priority: 110,
+                 colorState: 'yellow', type: 'רעידת אדמה חזקה', cities: ['אור עקיבא'] },
+        durationMs: 18000
+      },
+      // ── red tier (120-159) ────────────────────────────────────────────
+      {
+        triggerAtPercent: 0.12,
+        alert: { rid: 'mock-12', catId: 1, category: 'missilealert', priority: 120,
+                 colorState: 'red', type: 'טיל', cities: ['הרצליה - מערב', 'הרצליה - מרכז וגליל ים'] },
+        durationMs: 25000
+      },
+      {
+        triggerAtPercent: 0.28,
+        alert: { rid: 'mock-28', catId: 4, category: 'warning', priority: 140,
+                 colorState: 'red', type: 'אזהרה מוקדמת', cities: ['נתניה - מזרח', 'נתניה - מערב'] },
+        durationMs: 20000
+      },
+      {
+        triggerAtPercent: 0.60,
+        alert: { rid: 'mock-60', catId: 12, category: 'hazmat', priority: 150,
+                 colorState: 'red', type: 'חומ״ס', cities: ['קיסריה', 'נמל קיסריה'] },
+        durationMs: 20000
+      },
+      // ── purple (UAV override) ─────────────────────────────────────────
+      {
+        triggerAtPercent: 0.20,
+        alert: { rid: 'mock-20', catId: 2, category: 'uav', priority: 130,
+                 colorState: 'purple', type: 'כטב״ם', cities: ['רעננה', 'כפר סבא'] },
+        durationMs: 25000
+      },
+      // ── critical tier (160-199) ───────────────────────────────────────
+      {
+        triggerAtPercent: 0.36,
+        alert: { rid: 'mock-36', catId: 10, category: 'terrorattack', priority: 160,
+                 colorState: 'critical', type: 'חדירת מחבלים', cities: ['כפר יונה'] },
+        durationMs: 22000
+      },
+      {
+        triggerAtPercent: 0.68,
+        alert: { rid: 'mock-68', catId: 9, category: 'cbrne', priority: 170,
+                 colorState: 'critical', type: 'נשק בלתי קונבנציונלי', cities: ['חיפה - מערב'] },
+        durationMs: 22000
+      },
+      {
+        triggerAtPercent: 0.76,
+        alert: { rid: 'mock-76', catId: 3, category: 'nonconventional', priority: 180,
+                 colorState: 'critical', type: 'נשק לא קונבנציונלי', cities: ['חיפה - כרמל, הדר ועיר תחתית'] },
+        durationMs: 22000
+      },
+      // ── clear (fade-out demo) ─────────────────────────────────────────
+      {
+        triggerAtPercent: 0.85,
+        clear: { rid: 'mock-12' }
       }
     ];
 
