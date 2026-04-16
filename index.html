@@ -98,13 +98,12 @@
       left: calc(380px + (100vw - 380px) / 2);
       transform: translateX(-50%);
       z-index: 10;
-      display: flex;
+      display: inline-flex;
       align-items: stretch;
       gap: 0;
       border-radius: 0 0 12px 12px;
       overflow: hidden;
       box-shadow: var(--panel-shadow);
-      min-width: 200px;
     }
 
     #danger-indicator {
@@ -267,17 +266,7 @@
     /* Status bar — inset to the right of the 380px sidebar so it doesn't
        mask the share/offline buttons at the sidebar's bottom. */
     #status {
-      position: fixed;
-      bottom: 0; left: 380px; right: 0;
-      background: rgba(255,255,255,0.95);
-      padding: 10px 20px;
-      display: flex;
-      gap: 24px;
-      font-size: 13px;
-      color: #333;
-      z-index: 10;
-      box-shadow: 0 -2px 8px rgba(0,0,0,0.1);
-      align-items: center;
+      display: none;  /* removed per user request — progress/position/status bar hidden */
     }
     #status .label { color: #888; margin-right: 4px; }
     #status .danger-status {
@@ -1375,20 +1364,19 @@
       display: none;
       position: absolute;
       top: 12px; right: 12px;
-      width: 22px; height: 22px;
+      width: auto; height: auto;
       border: none;
-      border-radius: 50%;
-      background: #e0e0e0;
-      font-size: 11px;
+      border-radius: 0;
+      background: transparent;
+      font-size: 20px;
       cursor: pointer;
-      /* Flex centering — reliable for unicode glyphs */
       justify-content: center;
       align-items: center;
-      padding: 0;
+      padding: 4px;
       z-index: 1;
-      color: #555;
+      color: #888;
     }
-    #sidebar-close:active { background: #ccc; }
+    #sidebar-close:active { color: #333; }
     /* Dark overlay behind drawer (mobile only) */
     #sidebar-overlay {
       display: none;
@@ -1439,12 +1427,7 @@
         left: 50%;
         max-width: calc(100vw - 20px);
       }
-      #status {
-        left: 0;
-        padding: 8px 12px;
-        gap: 12px;
-        font-size: 12px;
-      }
+      /* #status is hidden globally — no mobile override needed */
 
       /* ── Floating panels reposition ───────────────────────── */
       #route-info {
