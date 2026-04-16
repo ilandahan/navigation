@@ -4747,11 +4747,11 @@
           document.querySelectorAll('#travel-mode-tabs .tm-btn').forEach(t =>
             t.classList.toggle('active', t.dataset.mode === 'driving'));
         }
-        // Update input fields visually
+        // Update input fields visually (handles both plain <input> and PlaceAutocompleteElement)
         const fromInput = document.getElementById('input-from');
         const toInput = document.getElementById('input-to');
-        if (fromInput && fromInput.tagName === 'INPUT') fromInput.value = 'Rishon LeZion';
-        if (toInput && toInput.tagName === 'INPUT') toInput.value = 'Kiryat Ata';
+        setAutocompleteText(fromInput, 'Rishon LeZion');
+        setAutocompleteText(toInput, 'Kiryat Ata');
         const ok = await loadRoute();
         btn.disabled = false;
         btn.textContent = 'Use Demo Route (Rishon → Kiryat Ata)';
