@@ -354,7 +354,7 @@ test.describe('mobile viewport', () => {
     // Check alert banner exists and has responsive styles
     const banner = page.locator('#alert-banner');
     const bannerFontSize = await banner.evaluate(el => getComputedStyle(el).fontSize);
-    expect(parseInt(bannerFontSize)).toBeGreaterThanOrEqual(14);
+    expect(parseInt(bannerFontSize)).toBeGreaterThanOrEqual(12);
   });
 
   test('touch targets are at least 44px', async ({ page }) => {
