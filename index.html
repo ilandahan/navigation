@@ -4419,34 +4419,37 @@
     // ========== GEOLOCATION ==========
     function addMyLocationButton() {
       const btn = document.createElement('button');
-      btn.textContent = '📍';
       btn.title = 'My location';
+      btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>';
       btn.style.cssText = `
         background: white;
-        border: 2px solid #ccc;
+        border: none;
         width: 40px; height: 40px;
-        border-radius: 50%;
+        border-radius: 8px;
         cursor: pointer;
-        font-size: 18px;
         margin: 10px;
         box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 0;
       `;
       btn.addEventListener('click', () => {
         if (!navigator.geolocation) {
           showToast('Geolocation not supported by this browser', true);
           return;
         }
-        btn.textContent = '⏳';
+        btn.style.opacity = '0.5';
         navigator.geolocation.getCurrentPosition(
           (pos) => {
-            btn.textContent = '📍';
+            btn.style.opacity = '1';
             const latLng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
             map.setCenter(latLng);
             map.setZoom(15);
             showToast(`Location found (±${Math.round(pos.coords.accuracy)}m)`);
           },
           (err) => {
-            btn.textContent = '📍';
+            btn.style.opacity = '1';
             showToast(`Location error: ${err.message}`, true);
           },
           { enableHighAccuracy: true, timeout: 10000 }
