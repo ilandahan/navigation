@@ -5096,10 +5096,13 @@
       function openSidebar() {
         controlsPanel.classList.add('open');
         sidebarOverlay.classList.add('open');
+        sidebarToggle.style.display = 'none';
       }
       function closeSidebar() {
         controlsPanel.classList.remove('open');
         sidebarOverlay.classList.remove('open');
+        // Re-show hamburger only on mobile
+        if (window.innerWidth <= 768) sidebarToggle.style.display = 'block';
       }
       sidebarToggle.addEventListener('click', openSidebar);
       sidebarClose.addEventListener('click', closeSidebar);
