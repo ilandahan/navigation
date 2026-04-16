@@ -1348,6 +1348,158 @@
       font-weight: 700;
       margin-right: 8px;
     }
+    /* ═══════════════════════════════════════════════════════════════
+       MOBILE: sidebar → slide-in drawer, full-width map, touch targets
+       ═══════════════════════════════════════════════════════════════ */
+
+    /* Hamburger toggle (mobile only) */
+    #sidebar-toggle {
+      display: none;
+      position: fixed;
+      top: 10px; left: 10px;
+      z-index: 20;
+      width: 44px; height: 44px;
+      border: none;
+      border-radius: 8px;
+      background: var(--color-surface);
+      box-shadow: var(--panel-shadow);
+      font-size: 22px;
+      cursor: pointer;
+      line-height: 44px;
+      text-align: center;
+    }
+    /* Close button inside drawer (mobile only) */
+    #sidebar-close {
+      display: none;
+      position: absolute;
+      top: 10px; right: 10px;
+      width: 36px; height: 36px;
+      border: none;
+      border-radius: 50%;
+      background: #eee;
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 36px;
+      text-align: center;
+      z-index: 1;
+    }
+    /* Dark overlay behind drawer (mobile only) */
+    #sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 9;
+    }
+
+    @media (max-width: 768px) {
+      /* ── Hamburger visible ────────────────────────────────── */
+      #sidebar-toggle { display: block; }
+      #sidebar-close  { display: block; }
+
+      /* ── Sidebar → slide-in drawer ────────────────────────── */
+      #controls {
+        width: 85vw;
+        max-width: 360px;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        z-index: 12;
+        padding-top: 50px;        /* room for close button */
+      }
+      #controls.open {
+        transform: translateX(0);
+      }
+      #sidebar-overlay.open {
+        display: block;
+      }
+
+      /* ── Map full-width ───────────────────────────────────── */
+      #map {
+        margin-left: 0 !important;
+        width: 100vw !important;
+      }
+
+      /* ── Top elements full-width ──────────────────────────── */
+      #feed-status-banner {
+        left: 0;
+      }
+      #top-bar {
+        left: 50%;
+        max-width: calc(100vw - 20px);
+      }
+      #status {
+        left: 0;
+        padding: 8px 12px;
+        gap: 12px;
+        font-size: 12px;
+      }
+
+      /* ── Floating panels reposition ───────────────────────── */
+      #route-info {
+        left: 10px;
+        top: 50px;
+        max-width: calc(100vw - 20px);
+        min-width: unset;
+      }
+      #shelter-panel {
+        left: 10px;
+        right: 10px;
+        bottom: 50px;
+        max-width: calc(100vw - 20px);
+      }
+      #instructions-panel {
+        left: 10px;
+        top: auto;
+        bottom: 50px;
+        max-width: calc(100vw - 20px);
+      }
+
+      /* ── Alert banner full-width readable ─────────────────── */
+      #alert-banner {
+        min-width: unset;
+        font-size: 16px;
+        padding: 12px 16px;
+      }
+
+      /* ── Touch targets ≥ 44px ─────────────────────────────── */
+      .mode-btn {
+        min-height: 44px;
+        font-size: 15px;
+        padding: 10px 16px;
+      }
+      .tm-btn {
+        min-height: 44px;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      button, .ctrl-row button, #btn-start, #btn-alert, #btn-demo-route,
+      #btn-share, #btn-offline, #btn-show-zones {
+        min-height: 44px;
+        font-size: 14px;
+      }
+      .sp-item button {
+        min-height: 40px;
+      }
+      input[type="text"], .gmp-autocomplete {
+        min-height: 44px;
+        font-size: 16px;  /* prevents iOS zoom on focus */
+      }
+
+      /* ── Hover → active/focus ─────────────────────────────── */
+      .mode-btn:active, .tm-btn:active, button:active {
+        opacity: 0.75;
+      }
+
+      /* ── Message overlay / share modal: tighter padding ──── */
+      #message-box {
+        padding: 24px 20px;
+        max-width: calc(100vw - 24px);
+      }
+      .share-link-container {
+        max-width: calc(100vw - 32px);
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -1435,7 +1587,12 @@
     </div>
   </div>
 
+  <!-- Mobile sidebar toggle — visible only on small screens -->
+  <button id="sidebar-toggle" aria-label="Toggle menu">☰</button>
+  <div id="sidebar-overlay"></div>
+
   <div id="controls">
+    <button id="sidebar-close" aria-label="Close menu">✕</button>
     <h3>Pikud HaOref Alert POC</h3>
 
     <!-- Mode toggle -->
@@ -4921,6 +5078,24 @@
       document.getElementById('btn-show-zones').addEventListener('click', () => {
         toggleZoneBorders();
       });
+
+      // Mobile sidebar toggle
+      const sidebarToggle = document.getElementById('sidebar-toggle');
+      const sidebarOverlay = document.getElementById('sidebar-overlay');
+      const sidebarClose = document.getElementById('sidebar-close');
+      const controlsPanel = document.getElementById('controls');
+
+      function openSidebar() {
+        controlsPanel.classList.add('open');
+        sidebarOverlay.classList.add('open');
+      }
+      function closeSidebar() {
+        controlsPanel.classList.remove('open');
+        sidebarOverlay.classList.remove('open');
+      }
+      sidebarToggle.addEventListener('click', openSidebar);
+      sidebarClose.addEventListener('click', closeSidebar);
+      sidebarOverlay.addEventListener('click', closeSidebar);
 
       // Initial gate-state on load (nothing selected yet)
       updateDirectionsGate();

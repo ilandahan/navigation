@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Live Location Receiver — Pikud HaOref POC</title>
   <link rel="preconnect" href="https://maps.googleapis.com">
   <link rel="preconnect" href="https://maps.gstatic.com" crossorigin>
@@ -213,6 +214,27 @@
     #waiting .w-icon { font-size: 60px; margin-bottom: 16px; }
     #waiting h2 { font-size: 22px; color: #333; margin-bottom: 10px; }
     #waiting p { font-size: 14px; color: #666; max-width: 440px; }
+
+    /* Mobile responsive */
+    @media (max-width: 768px) {
+      #info-panel {
+        left: 10px; right: 10px;
+        min-width: unset;
+        max-width: calc(100vw - 20px);
+        font-size: 12px;
+      }
+      #lost-overlay {
+        right: 10px; left: 10px;
+        width: auto;
+        max-width: calc(100vw - 20px);
+      }
+      header {
+        font-size: 14px;
+        padding: 10px;
+      }
+      #waiting h2 { font-size: 18px; }
+      #waiting p { font-size: 13px; max-width: calc(100vw - 40px); }
+    }
   </style>
 </head>
 <body>

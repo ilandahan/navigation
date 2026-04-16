@@ -293,3 +293,81 @@ test.describe('prod-only checks', () => {
     expect(loc).toMatch(/^https:/);
   });
 });
+
+test.describe('mobile viewport', () => {
+  test.use({ viewport: { width: 375, height: 667 } }); // iPhone SE
+
+  test('page loads and map is full-width on mobile', async ({ page }) => {
+    await page.goto('/');
+    await waitForAppReady(page);
+    await expect(page).toHaveTitle(/Pikud HaOref/);
+
+    // Hamburger toggle should be visible on mobile
+    const toggle = page.locator('#sidebar-toggle');
+    await expect(toggle).toBeVisible();
+
+    // Sidebar should be hidden (off-screen) by default
+    const controls = page.locator('#controls');
+    const transform = await controls.evaluate(el => getComputedStyle(el).transform);
+    expect(transform).not.toBe('none'); // translateX(-100%) → matrix value
+
+    // Map should be full-width
+    const mapWidth = await page.locator('#map').evaluate(el => el.getBoundingClientRect().width);
+    expect(mapWidth).toBeGreaterThanOrEqual(370); // 375 - small rounding
+  });
+
+  test('sidebar toggle opens and closes the drawer', async ({ page }) => {
+    await page.goto('/');
+    await waitForAppReady(page);
+
+    // Open sidebar
+    await page.locator('#sidebar-toggle').click();
+    const controls = page.locator('#controls');
+    await expect(controls).toHaveClass(/open/);
+
+    // Overlay should be visible
+    await expect(page.locator('#sidebar-overlay')).toHaveClass(/open/);
+
+    // Close via overlay tap
+    await page.locator('#sidebar-overlay').click({ force: true });
+    await expect(controls).not.toHaveClass(/open/);
+  });
+
+  test('demo route loads on mobile', async ({ page }) => {
+    await page.goto('/');
+    await waitForAppReady(page);
+
+    // Demo route auto-loads; wait for route info
+    await page.waitForFunction(() => {
+      const startBtn = document.getElementById('btn-start') as HTMLButtonElement | null;
+      return !!startBtn && !startBtn.disabled;
+    }, { timeout: 25_000 });
+
+    // Route info should be visible
+    await expect(page.locator('#route-info.visible')).toBeVisible();
+  });
+
+  test('alert banner is full-width and readable on mobile', async ({ page }) => {
+    await page.goto('/');
+    await waitForAppReady(page);
+
+    // Check alert banner exists and has responsive styles
+    const banner = page.locator('#alert-banner');
+    const bannerFontSize = await banner.evaluate(el => getComputedStyle(el).fontSize);
+    expect(parseInt(bannerFontSize)).toBeGreaterThanOrEqual(16);
+  });
+
+  test('touch targets are at least 44px', async ({ page }) => {
+    await page.goto('/');
+    await waitForAppReady(page);
+
+    // Open sidebar to check button sizes
+    await page.locator('#sidebar-toggle').click();
+
+    // Check mode buttons
+    const modeBtnHeight = await page.locator('.mode-btn').first().evaluate(
+      el => el.getBoundingClientRect().height
+    );
+    expect(modeBtnHeight).toBeGreaterThanOrEqual(44);
+  });
+});
