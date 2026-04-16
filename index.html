@@ -3243,8 +3243,16 @@
       if (alertData.colorState) banner.classList.add('state-' + alertData.colorState);
       banner.classList.add('visible');
 
-      const alertEntry = { polygons, cities: matchedCities, timerId: null, rid: alertData.rid || alertData.id || null };
+      const alertEntry = {
+        polygons, cities: matchedCities, timerId: null,
+        rid: alertData.rid || alertData.id || null,
+        colorState: alertData.colorState || 'red',
+        priority: alertData.priority || 120,
+      };
       activeAlerts.push(alertEntry);
+
+      // Update prediction line overlay (visual-only, no filter impact)
+      updatePredictionOverlay();
 
       // Refresh Route Options danger counts (route alternatives may now cross danger)
       updateRouteOptionsPanel();
@@ -3305,6 +3313,118 @@
         updateDangerStatus(false);
         hideShelterPanel();
         updateRouteOptionsPanel();
+      }
+      updatePredictionOverlay();
+    }
+
+    // ========== SOURCE-DIRECTION PREDICTION LINE ==========
+    // Visual-only — shows estimated threat launch direction via weighted PCA
+    // of active alert polygon centroids. Does NOT affect route filter verdicts.
+    let predictionDot = null;    // google.maps.Circle — shown for 1+ alerts
+    let predictionLineOverlay = null;  // google.maps.Polyline — shown for 2+ alerts
+
+    const COLOR_STATE_HEX = {
+      yellow:   '#ffb300',
+      red:      '#d32f2f',
+      critical: '#7b1fa2',
+      purple:   '#9c27b0',
+    };
+    const COLOR_PRIORITY = { critical: 4, purple: 3, red: 2, yellow: 1 };
+
+    function updatePredictionOverlay() {
+      if (!window.PredictionLine || !map) return;
+
+      // Gather centroids from active alert polygons
+      const centroids = [];
+      let dominantColor = 'red';
+      let dominantPriority = 0;
+
+      for (const alert of activeAlerts) {
+        // Compute centroid of this alert's polygon vertices
+        const allLats = [], allLngs = [];
+        for (const poly of alert.polygons) {
+          const path = poly.getPath();
+          if (!path) continue;
+          const arr = path.getArray();
+          for (let i = 0; i < arr.length; i++) {
+            allLats.push(typeof arr[i].lat === 'function' ? arr[i].lat() : arr[i].lat);
+            allLngs.push(typeof arr[i].lng === 'function' ? arr[i].lng() : arr[i].lng);
+          }
+        }
+        if (allLats.length === 0) continue;
+
+        const lat = allLats.reduce((s, v) => s + v, 0) / allLats.length;
+        const lng = allLngs.reduce((s, v) => s + v, 0) / allLngs.length;
+        // Weight by priority if available; default 120 (missile)
+        const weight = alert.priority || 120;
+        centroids.push({ lat, lng, weight });
+
+        // Track dominant color
+        const cs = alert.colorState || 'red';
+        if ((COLOR_PRIORITY[cs] || 0) > dominantPriority) {
+          dominantPriority = COLOR_PRIORITY[cs] || 0;
+          dominantColor = cs;
+        }
+      }
+
+      const color = COLOR_STATE_HEX[dominantColor] || '#d32f2f';
+
+      // No active alerts → clear everything
+      if (centroids.length === 0) {
+        if (predictionDot) { predictionDot.setMap(null); }
+        if (predictionLineOverlay) { predictionLineOverlay.setMap(null); }
+        return;
+      }
+
+      const result = PredictionLine.computePredictionLine(centroids);
+      if (!result.centroid) return;
+
+      // Dot at centroid (always shown for 1+ alerts)
+      if (!predictionDot) {
+        predictionDot = new google.maps.Circle({
+          radius: 3000,         // 3km radius
+          fillColor: color,
+          fillOpacity: 0.5,
+          strokeColor: color,
+          strokeOpacity: 0.8,
+          strokeWeight: 2,
+          zIndex: 30,
+        });
+      }
+      predictionDot.setCenter(result.centroid);
+      predictionDot.setOptions({ fillColor: color, strokeColor: color });
+      predictionDot.setMap(map);
+
+      // Line (shown for 2+ alerts when heading is available)
+      if (result.heading !== null) {
+        const lineLength = Math.max(result.spreadKm * 3, 20);
+        const endA = PredictionLine.computeOffset(result.centroid, result.heading, lineLength);
+        const endB = PredictionLine.computeOffset(result.centroid, (result.heading + 180) % 360, lineLength);
+
+        if (!predictionLineOverlay) {
+          predictionLineOverlay = new google.maps.Polyline({
+            strokeWeight: 3,
+            strokeOpacity: 0,
+            zIndex: 30,
+            icons: [{
+              icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.7, scale: 3 },
+              offset: '0',
+              repeat: '15px'
+            }]
+          });
+        }
+        predictionLineOverlay.setPath([endA, result.centroid, endB]);
+        predictionLineOverlay.setOptions({
+          icons: [{
+            icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.7, strokeColor: color, scale: 3 },
+            offset: '0',
+            repeat: '15px'
+          }]
+        });
+        predictionLineOverlay.setMap(map);
+      } else {
+        // <2 alerts — hide line but keep dot
+        if (predictionLineOverlay) predictionLineOverlay.setMap(null);
       }
     }
 
@@ -4766,6 +4886,7 @@
   <script src="./formatters.js"></script>
   <script src="./signOutCleanup.js"></script>
   <script src="./pikudClient.js"></script>
+  <script src="./predictionLine.js"></script>
 
   <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
        `loading=async` is Google's current best-practice flag (see
