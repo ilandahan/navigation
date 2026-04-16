@@ -4739,7 +4739,9 @@
         btn.textContent = 'Loading demo route...';
         currentOrigin = { ...ORIGIN, name: 'Rishon LeZion' };
         currentDestination = { ...DESTINATION, name: 'Kiryat Ata' };
-        useHardcodedWaypoints = true;
+        // Don't force waypoints — allows the Routes API to return alternatives.
+        // The natural driving route follows the coastal corridor anyway.
+        useHardcodedWaypoints = false;
         directionsRequested = true;        // demo auto-loads a route (UX-008)
         updateDirectionsGate();
         // Demo route is driving-only; switch to driving tab if not already there.
