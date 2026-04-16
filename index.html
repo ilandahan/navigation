@@ -3564,7 +3564,6 @@
       if (!route || !route.overview_path || route.overview_path.length === 0) return;
       if (!mainRoutePolyline) {
         mainRoutePolyline = new google.maps.Polyline({
-          map: map,
           strokeColor: '#1a73e8',
           strokeWeight: 7,
           strokeOpacity: 1.0,
@@ -3572,7 +3571,10 @@
         });
       }
       mainRoutePolyline.setPath(route.overview_path);
-      if (!mainRoutePolyline.getMap()) mainRoutePolyline.setMap(map);
+      // Always (re-)attach to map — the guarded `getMap()` check could miss
+      // edge cases where the polyline was created but not yet rendered
+      // (observed: driving mode route invisible until mode toggle).
+      mainRoutePolyline.setMap(map);
     }
     function clearMainRoute() {
       if (mainRoutePolyline) {
