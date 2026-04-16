@@ -1489,6 +1489,8 @@
       </div>
       <!-- Route alternatives render here inline (Google-Maps style) -->
       <div id="route-options"></div>
+      <!-- Toggle all alert zone borders on the map -->
+      <button id="btn-show-zones" style="width:100%;margin-top:6px;padding:8px;background:#e3f2fd;border:1px solid #90caf9;border-radius:6px;cursor:pointer;font-size:13px;">🗺️ Show All Alert Zones</button>
 
       <!-- Turn-by-turn directions — shown while the user is actively driving
            (Sim running OR Live Start-Driving pressed). Swaps with #route-options
@@ -3145,6 +3147,56 @@
         console.warn('[polygon-index] skipped ' + skipped.length + ' zones:',
           skipped.slice(0, 10), skipped.length > 10 ? '...and more' : '');
       }
+    }
+
+    // ========== ZONE BORDER OVERLAY ==========
+    // Draws all ~1448 alert zone borders on the map (outlines only, no fill).
+    let zoneBorderPolygons = [];
+    let zoneBordersVisible = false;
+
+    function toggleZoneBorders() {
+      if (zoneBordersVisible) {
+        // Hide all
+        for (let i = 0; i < zoneBorderPolygons.length; i++) {
+          zoneBorderPolygons[i].setMap(null);
+        }
+        zoneBorderPolygons = [];
+        zoneBordersVisible = false;
+        document.getElementById('btn-show-zones').textContent = '🗺️ Show All Alert Zones';
+        document.getElementById('btn-show-zones').style.background = '#e3f2fd';
+        return;
+      }
+
+      // Draw all zone borders
+      const names = Object.keys(polygonIndex);
+      for (let i = 0; i < names.length; i++) {
+        const zone = polygonIndex[names[i]];
+        if (!zone || !zone.latLngs || zone.latLngs.length < 3) continue;
+        const poly = new google.maps.Polygon({
+          paths: zone.latLngs,
+          strokeColor: '#1565c0',
+          strokeOpacity: 0.5,
+          strokeWeight: 1,
+          fillOpacity: 0,        // borders only — no fill
+          map: map,
+          zIndex: 1,
+          clickable: true,
+        });
+        // Click to show zone name
+        poly.addListener('click', (function (name) {
+          return function (e) {
+            infoWindow.setContent(
+              '<div style="font:600 14px Arial;padding:4px;direction:rtl">' + name + '</div>'
+            );
+            infoWindow.setPosition(e.latLng);
+            infoWindow.open(map);
+          };
+        })(names[i]));
+        zoneBorderPolygons.push(poly);
+      }
+      zoneBordersVisible = true;
+      document.getElementById('btn-show-zones').textContent = '🗺️ Hide Alert Zones (' + names.length + ')';
+      document.getElementById('btn-show-zones').style.background = '#bbdefb';
     }
 
     function populateDropdown() {
@@ -4863,6 +4915,11 @@
       // Simulate entering shelter (offline)
       document.getElementById('btn-offline').addEventListener('click', () => {
         toggleOfflineSimulation();
+      });
+
+      // Toggle all zone borders on map
+      document.getElementById('btn-show-zones').addEventListener('click', () => {
+        toggleZoneBorders();
       });
 
       // Initial gate-state on load (nothing selected yet)
