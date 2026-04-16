@@ -156,6 +156,12 @@
       margin-top: 4px;
       direction: ltr;
     }
+    /* Multi-color alert states — Pikud migration */
+    #alert-banner.state-yellow  { background: #ffb300; color: #111; }
+    #alert-banner.state-red     { background: #d32f2f; color: #fff; }
+    #alert-banner.state-critical { background: #7b1fa2; color: #fff; }
+    #alert-banner.state-purple  { background: #9c27b0; color: #fff; }
+    #alert-banner.state-fading  { transition: opacity 60s linear; opacity: 0.3; }
 
     /* Danger glow on map */
     #map.danger-glow {
@@ -1609,23 +1615,31 @@
     const MOCK_ALERTS = [
       {
         triggerAtPercent: 0.22,
-        alert: { type: 'Missiles', cities: ['נתניה - מזרח', 'נתניה - מערב'] },
+        alert: { rid: 'mock-22', catId: 1, category: 'missilealert', priority: 120,
+                 colorState: 'red', type: 'טיל', cities: ['נתניה - מזרח', 'נתניה - מערב'] },
         durationMs: 25000
       },
       {
         triggerAtPercent: 0.30,
-        alert: { type: 'Missiles', cities: ['כפר יונה', 'פרדסיה'] },
+        alert: { rid: 'mock-30', catId: 2, category: 'uav', priority: 130,
+                 colorState: 'purple', type: 'כטב״ם', cities: ['כפר יונה', 'פרדסיה'] },
         durationMs: 25000
       },
       {
         triggerAtPercent: 0.50,
-        alert: { type: 'Missiles', cities: ['חדרה - מרכז', 'חדרה - מערב'] },
+        alert: { rid: 'mock-50', catId: 4, category: 'warning', priority: 140,
+                 colorState: 'red', type: 'אזהרה מוקדמת', cities: ['חדרה - מרכז', 'חדרה - מערב'] },
         durationMs: 18000
       },
       {
         triggerAtPercent: 0.70,
-        alert: { type: 'Missiles', cities: ['אור עקיבא', 'קיסריה'] },
+        alert: { rid: 'mock-70', catId: 11, category: 'tsunami', priority: 100,
+                 colorState: 'yellow', type: 'צונאמי', cities: ['אור עקיבא', 'קיסריה'] },
         durationMs: 20000
+      },
+      {
+        triggerAtPercent: 0.80,
+        clear: { rid: 'mock-22' }
       }
     ];
 
@@ -1658,8 +1672,7 @@
     let insideDangerZone = false;
     let activeAlerts = [];           // { polygons: [google.maps.Polygon], cities: [], timerId }
     let triggeredMockAlerts = new Set();
-    // (Removed legacy `realAlertInterval` handle — startRealAlertPolling
-    //  now owns the timer via `realAlertTimer`.)
+    // (Alert polling is handled by PikudClient — see pikudClient.js.)
     let trafficLayer = null;
     let infoWindow = null;
     let routeTotalMeters = 0;
@@ -1696,14 +1709,11 @@
     //   from the original leg/step structure; empty when no route is loaded.
     // currentStepCursor = index into currentStepIndex. Monotonically advances
     //   as the driver progresses; linear-scan fallback on jump-back (reroute).
-    // recentAlertIds = Map<id, firstSeenMs> — dedup window (2 min) for real-feed polling.
     // lastDangerCheckAt = ms — throttle checkDangerZone() to 500ms (2Hz per tech spec) inside simStep.
     // lastAlertStats = { received, shown, discarded } — telemetry for the live status line.
     let currentRouteMeta = null;
     let currentStepIndex = [];
     let currentStepCursor = 0;
-    const recentAlertIds = new Map();
-    const ALERT_DEDUP_WINDOW_MS = 120000;
     // Toast durations grouped by intent. Centralised so a future tweak
     // (e.g. accessibility long-read mode) is one edit, not thirteen.
     const TOAST_MS = {
@@ -3181,12 +3191,15 @@
           'ALERT PARTIALLY RENDERED — polygon missing for: ' + missingCities.join(', '));
       }
 
-      // Show banner
+      // Show banner with color state
       const bannerText = document.getElementById('alert-text');
-      bannerText.textContent = `⚠️ ${alertData.type}: ${matchedCities.join(', ')}`;
-      document.getElementById('alert-banner').classList.add('visible');
+      bannerText.textContent = `⚠️ ${alertData.categoryHe || alertData.type} · ${matchedCities.join(' · ')}`;
+      const banner = document.getElementById('alert-banner');
+      banner.classList.remove('state-yellow', 'state-red', 'state-critical', 'state-purple', 'state-fading');
+      if (alertData.colorState) banner.classList.add('state-' + alertData.colorState);
+      banner.classList.add('visible');
 
-      const alertEntry = { polygons, cities: matchedCities, timerId: null };
+      const alertEntry = { polygons, cities: matchedCities, timerId: null, rid: alertData.rid || alertData.id || null };
       activeAlerts.push(alertEntry);
 
       // Refresh Route Options danger counts (route alternatives may now cross danger)
@@ -3208,15 +3221,40 @@
       return alertEntry;
     }
 
-    function clearAlertEntry(entry) {
-      entry.polygons.forEach(p => p.setMap(null));
+    function clearAlertEntry(entry, opts) {
+      opts = opts || {};
       if (entry.timerId) clearTimeout(entry.timerId);
 
+      if (opts.fade) {
+        // 60s fade-out: reduce polygon opacity to 0 over 60 intervals (1/sec)
+        const banner = document.getElementById('alert-banner');
+        banner.classList.add('state-fading');
+        let step = 0;
+        const fadeInterval = setInterval(() => {
+          step++;
+          const opacity = Math.max(0, 1 - step / 60);
+          entry.polygons.forEach(p => p.setOptions({
+            fillOpacity: 0.25 * opacity,
+            strokeOpacity: 0.8 * opacity,
+          }));
+          if (step >= 60) {
+            clearInterval(fadeInterval);
+            removeClearedEntry(entry);
+          }
+        }, 1000);
+      } else {
+        removeClearedEntry(entry);
+      }
+    }
+
+    function removeClearedEntry(entry) {
+      entry.polygons.forEach(p => p.setMap(null));
       const idx = activeAlerts.indexOf(entry);
       if (idx !== -1) activeAlerts.splice(idx, 1);
 
       if (activeAlerts.length === 0) {
-        document.getElementById('alert-banner').classList.remove('visible', 'inside');
+        const banner = document.getElementById('alert-banner');
+        banner.classList.remove('visible', 'inside', 'state-yellow', 'state-red', 'state-critical', 'state-purple', 'state-fading');
         document.getElementById('map').classList.remove('danger-glow');
         insideDangerZone = false;
         escapeRouteActive = false;
@@ -3271,12 +3309,6 @@
       return { position: pos, speedMps: speed };
     }
 
-    function evictExpiredAlertIds(nowMs) {
-      for (const [id, seen] of recentAlertIds) {
-        if (nowMs - seen > ALERT_DEDUP_WINDOW_MS) recentAlertIds.delete(id);
-      }
-    }
-
     // opts: { bypassFilter?: boolean, source?: 'mock'|'live'|'manual' }
     function processIncomingAlert(alertData, durationMs, opts) {
       opts = opts || {};
@@ -3286,15 +3318,6 @@
       // not talked over by "In 500 meters, turn left". The driver needs
       // their full attention on the alert when one fires.
       if (typeof tbtYieldVoiceForAlert === 'function') tbtYieldVoiceForAlert(20000);
-
-      // Dedup by id (real-feed alerts carry an id; mock/manual typically don't)
-      const now = Date.now();
-      evictExpiredAlertIds(now);
-      if (alertData.id && recentAlertIds.has(alertData.id)) {
-        lastAlertStats.discarded++;
-        return { relevant: false, reason: 'duplicate' };
-      }
-      if (alertData.id) recentAlertIds.set(alertData.id, now);
 
       if (opts.bypassFilter) {
         fireAlertWithDuration(alertData, durationMs);
@@ -3970,9 +3993,14 @@
         const key = mock.triggerAtPercent.toString();
         if (!triggeredMockAlerts.has(key) && progress >= mock.triggerAtPercent) {
           triggeredMockAlerts.add(key);
-          // Route every mock alert through the same funnel the real feed
-          // uses — this is how simulation stays a valid test harness.
-          processIncomingAlert(mock.alert, mock.durationMs, { source: 'mock' });
+          if (mock.clear) {
+            // Synthetic clear — triggers the same fade path as a live all-clear.
+            clearByRid(mock.clear.rid, { fade: true });
+          } else {
+            // Route every mock alert through the same funnel the real feed
+            // uses — this is how simulation stays a valid test harness.
+            processIncomingAlert(mock.alert, mock.durationMs, { source: 'mock' });
+          }
         }
       }
 
@@ -4157,109 +4185,20 @@
       document.getElementById('btn-start').disabled = false;
     }
 
-    // ========== REAL ALERT POLLING ==========
-    // Single source: https://api.tzevaadom.co.il/notifications via a single
-    // CORS proxy. NO silent fallback chain — if the proxy fails, the user
-    // MUST see a banner (this is a life-safety feed). Swap the proxy here
-    // if the public one is rate-limited; do not rotate silently.
-    const ALERT_ENDPOINT = 'https://api.tzevaadom.co.il/notifications';
-    const ALERT_PROXY = u => 'https://corsproxy.io/?' + encodeURIComponent(u);
+    // ========== REAL ALERT POLLING (via PikudClient) ==========
+    // PikudClient.start/stop replaces the former Tzeva Adom polling block.
+    // All polling, classification, dedup, and all-clear diff logic lives
+    // in pikudClient.js. This section just wires the callbacks.
 
-    async function fetchAlertsJson() {
-      const resp = await fetch(ALERT_PROXY(ALERT_ENDPOINT));
-      if (!resp.ok) throw new Error('HTTP ' + resp.status + ' from proxy');
-      return resp.json();
+    function updateFeedStatus(status) {
+      if (status === 'ok')                setFeedStatus('ok', 'Pikud HaOref feed: connected');
+      else if (status === 'upstream_degraded') setFeedStatus('error', 'ALERT FEED DEGRADED — upstream may be down');
+      else if (status === 'network_error')     setFeedStatus('error', 'ALERT FEED UNREACHABLE — alerts may be missed');
     }
 
-    // Self-scheduling poller with exponential backoff so a geo-blocked or
-    // offline feed does not hammer the endpoint every 3 seconds and spam
-    // the console. On success: 3s cadence. On failure: 3s → 10s → 30s (cap).
-    // console.warn is throttled to failure #1 and #5 only; the toast fires
-    // exactly once at #5.
-    let realAlertTimer = null;
-    let realPollFailuresInARow = 0;
-    const POLL_BASE_MS = 3000;
-    const POLL_MAX_MS  = 30000;
-
-    function nextPollDelay(failures) {
-      if (failures < 2) return POLL_BASE_MS;
-      if (failures < 4) return 10000;
-      return POLL_MAX_MS;
-    }
-
-    function startRealAlertPolling() {
-      if (realAlertTimer) return;
-      console.log('Starting real Pikud HaOref alert polling...');
-      realPollFailuresInARow = 0;
-
-      let stopped = false;
-      const tick = async () => {
-        // Mode guard — setMode is the normal stop path, this is defense-in-depth.
-        if (stopped || currentMode !== 'live') { realAlertTimer = null; return; }
-
-        let delay = POLL_BASE_MS;
-        try {
-          // Response shape after unwrap:
-          //   [{ notificationId, time (unix seconds), threat, isDrill, cities: string[] }]
-          // Empty array `[]` means no active alerts.
-          const list = await fetchAlertsJson();
-          realPollFailuresInARow = 0;
-          setFeedStatus('ok', 'Pikud HaOref feed: connected');
-
-          if (Array.isArray(list) && list.length > 0) {
-            const nowSec = Date.now() / 1000;
-            // Only surface alerts from the last 90s (our own alert lifetime)
-            // and ignore drills. Dedup by notificationId is handled inside
-            // processIncomingAlert over a 2-minute window.
-            const fresh = list.filter(n =>
-              n && !n.isDrill && Array.isArray(n.cities) && n.cities.length > 0
-              && (typeof n.time !== 'number' || (nowSec - n.time) < 90)
-            );
-            for (const n of fresh) {
-              console.log('REAL ALERT:', n);
-              processIncomingAlert(
-                { id: n.notificationId || ('tzeva-' + (n.time || Date.now())),
-                  type: 'Missiles',
-                  cities: n.cities },
-                90000,  // 90s alert lifetime
-                { source: 'live' }
-              );
-            }
-          }
-        } catch (e) {
-          realPollFailuresInARow++;
-          delay = nextPollDelay(realPollFailuresInARow);
-
-          // Log on #1 and on the threshold boundary (#5) only — stops spam.
-          if (realPollFailuresInARow === 1 || realPollFailuresInARow === 5) {
-            console.warn('Real alert poll failed:',
-              e.message || e,
-              `(retrying in ${Math.round(delay / 1000)}s, failure #${realPollFailuresInARow})`);
-          }
-          // LOUD failure — life-safety: banner stays until feed recovers.
-          setFeedStatus('error',
-            'ALERT FEED UNREACHABLE — alerts may be missed. ' +
-            `(Retrying in ${Math.round(delay / 1000)}s, failure #${realPollFailuresInARow})`);
-        }
-
-        // Re-check the guard before scheduling — prevents a pre-stop tick
-        // that finished its fetch from resurrecting the timer handle.
-        if (stopped || currentMode !== 'live') { realAlertTimer = null; return; }
-        realAlertTimer = setTimeout(tick, delay);
-      };
-
-      // Expose the stop flag to stopRealAlertPolling via the outer closure.
-      startRealAlertPolling._stop = () => { stopped = true; };
-      tick();
-    }
-
-    function stopRealAlertPolling() {
-      if (startRealAlertPolling._stop) startRealAlertPolling._stop();
-      if (realAlertTimer) {
-        clearTimeout(realAlertTimer);
-        realAlertTimer = null;
-        console.log('Stopped real alert polling');
-      }
+    function clearByRid(rid, opts) {
+      const entry = activeAlerts.find(e => e.rid === rid);
+      if (entry) clearAlertEntry(entry, opts);
     }
 
     // ========== UI CONTROLS ==========
@@ -4427,7 +4366,7 @@
       if (isRunning) stopSimulation();
       if (isDriving) stopNavigation();
       if (gpsWatchId !== null) stopRealGPS();
-      if (realAlertTimer) stopRealAlertPolling();
+      PikudClient.stop();
       // Traffic stays on for both modes (UX-004 — no toggle).
       if (trafficLayer) trafficLayer.setMap(map);
 
@@ -4477,7 +4416,11 @@
 
       renderLiveStatus({ gps: 'starting', real: 'starting', feed: feedState === 'on' ? 'on' : 'starting', traffic: 'on' });
       startRealGPS();
-      startRealAlertPolling();
+      PikudClient.start({
+        onAlert: function(a) { processIncomingAlert(a, a._durationMs, { source: 'live' }); },
+        onClear: function(rid) { clearByRid(rid, { fade: true }); },
+        onStatus: updateFeedStatus,
+      });
       // Mount turn-by-turn directions (swap Route Options for Directions).
       tbtWireControls();
       tbtMount();
@@ -4489,7 +4432,7 @@
       if (!isDriving) return;
       isDriving = false;
       if (gpsWatchId !== null) stopRealGPS();
-      if (realAlertTimer) stopRealAlertPolling();
+      PikudClient.stop();
       tbtUnmount();
       document.getElementById('live-driving').hidden = true;
       document.getElementById('live-idle').hidden = false;
@@ -4513,7 +4456,7 @@
     function refreshLiveStatus() {
       renderLiveStatus({
         gps:     gpsWatchId !== null ? 'on' : 'off',
-        real:    realAlertTimer !== null ? 'on' : 'off',
+        real:    isDriving ? 'on' : 'off',
         feed:    feedState,
         traffic: 'on'
       });
@@ -4776,6 +4719,7 @@
   <script src="./myLocation.js"></script>
   <script src="./formatters.js"></script>
   <script src="./signOutCleanup.js"></script>
+  <script src="./pikudClient.js"></script>
 
   <!-- REPLACE YOUR_API_KEY with your Google Maps API key.
        `loading=async` is Google's current best-practice flag (see

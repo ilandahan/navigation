@@ -3,6 +3,15 @@
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
   },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "runtime": "nodejs22",
+      "region": "me-west1",
+      "ignore": ["node_modules", ".git", "*.log", ".env*"]
+    }
+  ],
   "hosting": {
     "public": ".",
     "ignore": [
@@ -21,7 +30,14 @@
       ".claude/**",
       "docs/**",
       "tests/**",
-      "node_modules/**"
+      "node_modules/**",
+      "functions/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/api/**",
+        "function": { "functionId": "api", "region": "me-west1" }
+      }
     ]
   }
 }
