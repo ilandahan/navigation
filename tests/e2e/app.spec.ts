@@ -111,8 +111,8 @@ test.describe('Sim mode turn-by-turn', () => {
       }
     });
 
-    // Click "Use Demo Route"
-    await page.getByRole('button', { name: /Demo Route/ }).click();
+    // Demo route auto-loads on page init. Wait for it to complete
+    // (previously this test clicked the button, but auto-load races with the click).
 
     // Wait for route to land (DOM signals: Start button enabled, toast fired).
     // The per-variable globals are `let`-scoped inside the inline <script> so
