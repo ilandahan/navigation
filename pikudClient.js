@@ -99,11 +99,22 @@
   }
 
   // ── Polling engine ─────────────────────────────────────────────────
-  var POLL_INTERVAL_MS = 1000;
+  // 3 s base cadence — balances responsiveness with Cloud Function rate limits.
+  // On 429 (rate-limited) or network error: exponential backoff up to 30 s.
+  // On success: reset to base cadence.
+  var POLL_BASE_MS = 3000;
+  var POLL_MAX_MS  = 30000;
+  var consecutiveFailures = 0;
   var timerId = null;
   var callbacks = { onAlert: null, onClear: null, onStatus: null };
   var liveActiveRids = new Map();
   var dispatchedRids = new Map();  // rid → dispatchedAtMs
+
+  function nextDelay() {
+    if (consecutiveFailures === 0) return POLL_BASE_MS;
+    // Exponential: 3s → 6s → 12s → 24s → 30s cap
+    return Math.min(POLL_BASE_MS * Math.pow(2, consecutiveFailures), POLL_MAX_MS);
+  }
 
   function tick() {
     var nowMs = Date.now();
@@ -111,7 +122,8 @@
 
     fetch('/api/alerts').then(function (res) {
       if (!res.ok) {
-        if (callbacks.onStatus) callbacks.onStatus('network_error');
+        consecutiveFailures++;
+        if (callbacks.onStatus) callbacks.onStatus(res.status === 429 ? 'rate_limited' : 'network_error');
         scheduleNext();
         return;
       }
@@ -120,14 +132,15 @@
       if (!json) return;
 
       if (!json.ok) {
+        consecutiveFailures++;
         if (callbacks.onStatus) callbacks.onStatus('upstream_degraded');
-        // Still run diff with empty alerts to detect clears from stale state
         var emptyClears = diff(liveActiveRids, [], nowMs);
         emitClears(emptyClears);
         scheduleNext();
         return;
       }
 
+      consecutiveFailures = 0;  // success — reset backoff
       if (callbacks.onStatus) callbacks.onStatus('ok');
 
       // Normalize all alerts
@@ -152,6 +165,7 @@
 
       scheduleNext();
     }).catch(function () {
+      consecutiveFailures++;
       if (callbacks.onStatus) callbacks.onStatus('network_error');
       scheduleNext();
     });
@@ -166,7 +180,7 @@
 
   function scheduleNext() {
     if (timerId === null) return;  // stopped while in-flight
-    timerId = setTimeout(tick, POLL_INTERVAL_MS);
+    timerId = setTimeout(tick, nextDelay());
   }
 
   function start(opts) {
@@ -176,6 +190,7 @@
     callbacks.onStatus = opts.onStatus || null;
     liveActiveRids.clear();
     dispatchedRids.clear();
+    consecutiveFailures = 0;
     timerId = setTimeout(tick, 0);  // fire immediately
   }
 

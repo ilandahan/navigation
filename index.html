@@ -3095,7 +3095,7 @@
             glyphText: 'A', glyphColor: 'white',
             background: '#1a73e8', borderColor: '#1765cc'
           }),
-          title: currentOrigin.name
+          title: (currentOrigin && currentOrigin.name) || 'A'
         });
         destMarker = new google.maps.marker.AdvancedMarkerElement({
           position: req.destination, map: map,
@@ -3103,7 +3103,7 @@
             glyphText: 'B', glyphColor: 'white',
             background: '#d93025', borderColor: '#b1261b'
           }),
-          title: currentDestination.name
+          title: (currentDestination && currentDestination.name) || 'B'
         });
 
         // Reset mock alert trigger state so alerts fire again on next sim run
@@ -4357,8 +4357,9 @@
     // in pikudClient.js. This section just wires the callbacks.
 
     function updateFeedStatus(status) {
-      if (status === 'ok')                setFeedStatus('ok', 'Pikud HaOref feed: connected');
+      if (status === 'ok')                     setFeedStatus('ok', 'Pikud HaOref feed: connected');
       else if (status === 'upstream_degraded') setFeedStatus('error', 'ALERT FEED DEGRADED — upstream may be down');
+      else if (status === 'rate_limited')      setFeedStatus('warn', 'Alert feed rate-limited — backing off, will retry');
       else if (status === 'network_error')     setFeedStatus('error', 'ALERT FEED UNREACHABLE — alerts may be missed');
     }
 
