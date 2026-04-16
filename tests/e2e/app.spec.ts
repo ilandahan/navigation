@@ -28,7 +28,7 @@ test.describe('load + static checks', () => {
     await page.goto('/');
     await waitForAppReady(page);
 
-    await expect(page).toHaveTitle(/Pikud HaOref/);
+    await expect(page).toHaveTitle(/Poli-Gate/);
     // Use exact name to avoid matching "Start Simulation" button too.
     await expect(page.getByRole('button', { name: /^🎮 Simulation$/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /^🛰️ Live$/ })).toBeVisible();
@@ -300,7 +300,7 @@ test.describe('mobile viewport', () => {
   test('page loads and map is full-width on mobile', async ({ page }) => {
     await page.goto('/');
     await waitForAppReady(page);
-    await expect(page).toHaveTitle(/Pikud HaOref/);
+    await expect(page).toHaveTitle(/Poli-Gate/);
 
     // Hamburger toggle should be visible on mobile
     const toggle = page.locator('#sidebar-toggle');
